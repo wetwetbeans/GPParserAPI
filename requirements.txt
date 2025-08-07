@@ -1,2 +1,3 @@
-Flask
-PyGuitarPro
+flask
+gunicorn
+python-guitarpro
