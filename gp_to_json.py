@@ -1,16 +1,8 @@
 import guitarpro
 import json
-import sys
 import os
 
-if len(sys.argv) < 2:
-    print("Usage: python gp_to_json.py path_to_file.gpX")
-    sys.exit(1)
-
-input_path = sys.argv[1]
-output_path = os.path.join(os.path.dirname(input_path), "output.json")
-
-try:
+def parse_gp_file(input_path):
     song = guitarpro.parse(input_path)
 
     export = {
@@ -43,7 +35,7 @@ try:
                     for note in beat.notes:
                         beat_data["notes"].append({
                             "string": note.string,
-                            "fret": note.value  # use .value instead of .fret
+                            "fret": note.value  # correct property
                         })
 
                     voice_data["beats"].append(beat_data)
@@ -54,10 +46,23 @@ try:
 
         export["tracks"].append(track_data)
 
-    with open(output_path, "w") as f:
-        json.dump(export, f, indent=2)
+    return export
 
-    print("✅ Exported to:", output_path)
+# 🧪 CLI usage for local testing
+if __name__ == "__main__":
+    import sys
 
-except Exception as e:
-    print("❌ Error:", e)
+    if len(sys.argv) < 2:
+        print("Usage: python gp_to_json.py path_to_file.gpX")
+        sys.exit(1)
+
+    input_path = sys.argv[1]
+    output_path = os.path.join(os.path.dirname(input_path), "output.json")
+
+    try:
+        result = parse_gp_file(input_path)
+        with open(output_path, "w") as f:
+            json.dump(result, f, indent=2)
+        print("✅ Exported to:", output_path)
+    except Exception as e:
+        print("❌ Error:", e)
