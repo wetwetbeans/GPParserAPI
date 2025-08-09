@@ -98,6 +98,15 @@ app.MapPost("/parse", async (HttpRequest req) =>
     if (score.Tracks == null || score.Tracks.Count == 0)
         return Results.BadRequest("No tracks found.");
 
+    // --- New: fallback metadata extraction ---
+    string title = !string.IsNullOrWhiteSpace(score.Title)
+        ? score.Title
+        : score.MetaData?.GetValueOrDefault("title") ?? "";
+
+    string artist = !string.IsNullOrWhiteSpace(score.Artist)
+        ? score.Artist
+        : score.MetaData?.GetValueOrDefault("artist") ?? "";
+
     Track PickTrack()
     {
         if (trackIndex is int idx && idx >= 0 && idx < score.Tracks.Count)
@@ -119,8 +128,8 @@ app.MapPost("/parse", async (HttpRequest req) =>
     var timeSigs = CollectTimeSigs(score);
 
     var scoreJson = new ScoreJson(
-        title: score.Title ?? "",
-        artist: score.Artist ?? "",
+        title: title,
+        artist: artist,
         tempo: score.Tempo > 0 ? score.Tempo : 120.0,
         ticksPerBeat: 480,
         timeSignatures: timeSigs,
