@@ -35,6 +35,36 @@ static int[] Tunings(Staff s)
     return list.Select(v => (int)Math.Round(v)).ToArray();
 }
 
+// MIDI -> "E2" etc
+static string[] TuningsToNoteNames(int[] midiNumbers)
+{
+    string[] noteNames = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    var names = new List<string>();
+    foreach (var midi in midiNumbers)
+    {
+        if (midi >= 0 && midi <= 127)
+        {
+            int note = midi % 12;
+            int octave = (midi / 12) - 1;
+            names.Add($"{noteNames[note]}{octave}");
+        }
+        else names.Add("?");
+    }
+    return names.ToArray();
+}
+
+// MIDI -> "EADGBE" etc (drop octaves, keep sharps)
+static string TuningsToLetters(int[] midiNumbers)
+{
+    string[] noteNames = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    var letters = midiNumbers.Select(m =>
+    {
+        if (m < 0 || m > 127) return "?";
+        return noteNames[m % 12];
+    });
+    return string.Concat(letters); // e.g., "EADGBE"
+}
+
 // alphaTab 1.6.x: read numerator/denominator from MasterBar via props
 static TimeSigJson[] CollectTimeSigs(Score s)
 {
@@ -68,7 +98,7 @@ static KeySigJson[] CollectKeySigs(Score s)
         {
             var mb = s.MasterBars[i];
             var ksProp = mb.GetType().GetProperty("KeySignature");       // int flats/sharps
-            var kstProp = mb.GetType().GetProperty("KeySignatureType");   // 0=major, 1=minor (in alphaTab)
+            var kstProp = mb.GetType().GetProperty("KeySignatureType");   // 0=major, 1=minor
             if (ksProp != null)
             {
                 int ks = Convert.ToInt32(ksProp.GetValue(mb) ?? 0);
@@ -153,9 +183,7 @@ app.MapPost("/parse", async (HttpRequest req) =>
 
     Track PickTrack()
     {
-        if (trackIndex is int idx && idx >= 0 && idx < score.Tracks.Count)
-            return score.Tracks[idx];
-
+        if (trackIndex is int idx && idx >= 0 && idx < score.Tracks.Count) return score.Tracks[idx];
         return score.Tracks.FirstOrDefault(t =>
             t.Staves != null &&
             t.Staves.Count > 0 &&
@@ -166,12 +194,11 @@ app.MapPost("/parse", async (HttpRequest req) =>
 
     var tr = PickTrack();
     var staff = (tr.Staves != null && tr.Staves.Count > 0) ? tr.Staves[0] : null;
-    if (staff == null)
-        return Results.BadRequest("Selected track has no staves.");
+    if (staff == null) return Results.BadRequest("Selected track has no staves.");
 
-    // Top-level metadata (strict placeholders for title/artist)
-    var title = !string.IsNullOrWhiteSpace(score.Title) ? score.Title : "(Untitled)";
+    // Top-level metadata (artist before title)
     var artist = !string.IsNullOrWhiteSpace(score.Artist) ? score.Artist : "(Unknown Artist)";
+    var title = !string.IsNullOrWhiteSpace(score.Title) ? score.Title : "(Untitled)";
     var album = score.Album ?? "";
     var subtitle = score.SubTitle ?? "";
     var copyright = score.Copyright ?? "";
@@ -183,15 +210,17 @@ app.MapPost("/parse", async (HttpRequest req) =>
 
     // Global/top-of-file musical context
     var baseTempoBpm = score.Tempo > 0 ? score.Tempo : 120.0;
-    var ticksPerBeat = 480; // convention you’re using for DisplayStart/Duration
+    var ticksPerBeat = 480; // consistent with DisplayStart/Duration
     var globalTuning = Tunings(staff);
+    var globalTuningText = TuningsToNoteNames(globalTuning);
+    var globalTuningLetters = TuningsToLetters(globalTuning);
     var timeSigs = CollectTimeSigs(score);
     var keySigs = CollectKeySigs(score);
     var tempoChanges = CollectTempos(score);
 
     var scoreJson = new ScoreJson(
-        title: title,
         artist: artist,
+        title: title,
         album: album,
         subtitle: subtitle,
         copyright: copyright,
@@ -203,6 +232,8 @@ app.MapPost("/parse", async (HttpRequest req) =>
         tempo: baseTempoBpm,
         ticksPerBeat: ticksPerBeat,
         globalTuning: globalTuning,
+        globalTuningText: globalTuningText,
+        globalTuningLetters: globalTuningLetters,
         timeSignatures: timeSigs,
         keySignatures: keySigs,
         tempoChanges: tempoChanges,
@@ -268,6 +299,8 @@ record ScoreJson(
     double tempo,
     int ticksPerBeat,
     int[] globalTuning,
+    string[] globalTuningText,
+    string globalTuningLetters,
     TimeSigJson[] timeSignatures,
     KeySigJson[] keySignatures,
     TempoChangeJson[] tempoChanges,
