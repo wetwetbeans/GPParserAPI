@@ -1,5 +1,4 @@
 ﻿using System.Text.Json;
-using System.Text.Json.Serialization;
 using AlphaTab;
 using AlphaTab.Importer;
 using AlphaTab.Model;
@@ -7,15 +6,14 @@ using Microsoft.AspNetCore.Http.Features;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Allow GP uploads up to ~20MB
+// Upload size
 builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 20 * 1024 * 1024);
 
-// CORS so Unity (incl. WebGL) can call this API
+// CORS (WebGL, mobile)
 var allowAll = "AllowAll";
-builder.Services.AddCors(o =>
-    o.AddPolicy(allowAll, p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
+builder.Services.AddCors(o => o.AddPolicy(allowAll, p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
 
-// Optional API key (set API_KEY in Render env)
+// Optional API key (set API_KEY in Render)
 var apiKey = builder.Configuration["API_KEY"];
 
 var app = builder.Build();
@@ -24,7 +22,7 @@ app.UseCors(allowAll);
 // Health
 app.MapGet("/", () => Results.Json(new { ok = true, service = "alphaTab GP parser", formats = "GP3–GP8" }));
 
-// ---- helpers ----
+// ------------ helpers ------------
 static int[] Tunings(Staff s)
 {
     var list = s.StringTuning?.Tunings;
@@ -32,7 +30,7 @@ static int[] Tunings(Staff s)
     return list.Select(v => (int)Math.Round(v)).ToArray();
 }
 
-// Time signatures per master bar (alphaTab 1.6.x: use Numerator/Denominator properties on MasterBar)
+// alphaTab 1.6.x: read numerator/denominator from MasterBar via props
 static TimeSigJson[] CollectTimeSigs(Score s)
 {
     var list = new List<TimeSigJson>();
@@ -41,27 +39,21 @@ static TimeSigJson[] CollectTimeSigs(Score s)
         for (int i = 0; i < s.MasterBars.Count; i++)
         {
             var mb = s.MasterBars[i];
-
-            // Try direct properties (preferred in 1.6.x)
             var numProp = mb.GetType().GetProperty("TimeSignatureNumerator");
             var denProp = mb.GetType().GetProperty("TimeSignatureDenominator");
-
-            int num = 0, den = 0;
             if (numProp != null && denProp != null)
             {
-                num = Convert.ToInt32(numProp.GetValue(mb) ?? 0);
-                den = Convert.ToInt32(denProp.GetValue(mb) ?? 0);
+                int num = Convert.ToInt32(numProp.GetValue(mb) ?? 0);
+                int den = Convert.ToInt32(denProp.GetValue(mb) ?? 0);
+                if (num > 0 && den > 0) list.Add(new TimeSigJson(num, den, i));
             }
-
-            if (num > 0 && den > 0)
-                list.Add(new TimeSigJson(num, den, i));
         }
     }
-    catch { /* swallow */ }
+    catch { }
     return list.ToArray();
 }
 
-// ---- /parse ----
+// ------------ /parse ------------
 app.MapPost("/parse", async (HttpRequest req) =>
 {
     if (!string.IsNullOrEmpty(apiKey))
@@ -76,50 +68,34 @@ app.MapPost("/parse", async (HttpRequest req) =>
     if (file == null || file.Length == 0) return Results.BadRequest("Upload .gp3/.gp4/.gp5/.gpx/.gp as 'file'");
 
     int? trackIndex = null;
-    if (form.TryGetValue("trackIndex", out var tiVal) && int.TryParse(tiVal, out var tiParsed))
-        trackIndex = tiParsed;
+    if (form.TryGetValue("trackIndex", out var tiVal) && int.TryParse(tiVal, out var tiParsed)) trackIndex = tiParsed;
 
     byte[] data;
-    using (var ms = new MemoryStream())
-    {
-        await file.CopyToAsync(ms);
-        data = ms.ToArray();
-    }
+    using (var ms = new MemoryStream()) { await file.CopyToAsync(ms); data = ms.ToArray(); }
 
     Score score;
-    try
-    {
-        var settings = new Settings();
-        score = ScoreLoader.LoadScoreFromBytes(data, settings);
-    }
+    try { score = ScoreLoader.LoadScoreFromBytes(data, new Settings()); }
     catch (Exception ex) { return Results.BadRequest($"alphaTab failed to parse: {ex.Message}"); }
 
-    if (score.Tracks == null || score.Tracks.Count == 0)
-        return Results.BadRequest("No tracks found.");
+    if (score.Tracks == null || score.Tracks.Count == 0) return Results.BadRequest("No tracks found.");
 
     Track PickTrack()
     {
-        if (trackIndex.HasValue && trackIndex.Value >= 0 && trackIndex.Value < score.Tracks.Count)
-            return score.Tracks[trackIndex.Value];
-
+        if (trackIndex is int idx && idx >= 0 && idx < score.Tracks.Count) return score.Tracks[idx];
         return score.Tracks.FirstOrDefault(t =>
             t.Staves != null &&
             t.Staves.Count > 0 &&
             !t.Staves[0].IsPercussion &&
-            t.Staves[0].StringTuning?.Tunings != null &&
-            t.Staves[0].StringTuning.Tunings.Count >= 4 &&
-            t.Staves[0].StringTuning.Tunings.Count <= 7
+            t.Staves[0].StringTuning?.Tunings is { Count: >= 4 and <= 7 }
         ) ?? score.Tracks[0];
     }
 
     var tr = PickTrack();
-    var staves = tr.Staves ?? new List<Staff>();
-    var staff = staves.Count > 0 ? staves[0] : null;
+    var staff = (tr.Staves != null && tr.Staves.Count > 0) ? tr.Staves[0] : null;
     if (staff == null) return Results.BadRequest("Selected track has no staves.");
 
     var timeSigs = CollectTimeSigs(score);
 
-    // Minimal, stable JSON: ticks + notes (string/fret), plus tuning and time signatures
     var scoreJson = new ScoreJson(
         title: score.Title ?? "",
         artist: score.Artist ?? "",
@@ -144,21 +120,16 @@ app.MapPost("/parse", async (HttpRequest req) =>
                                                 notes: (beat.Notes ?? new List<Note>()).Select(n =>
                                                 {
                                                     int stringCount = staff.StringTuning?.Tunings?.Count ?? 6;
-                                                    int low = (int)n.String; // 1..N, 1 = lowest (alphaTab native)
+                                                    int low = (int)n.String; // 1..N, 1 = lowest (alphaTab)
                                                     int high = stringCount > 0 ? (stringCount - low + 1) : low; // 1 = highest for tab UI
-
-                                                    return new NoteJson(
-                                                        @stringLow: low,
-                                                        @stringHigh: high,
-                                                        fret: (int)n.Fret
-                                                    );
+                                                    return new NoteJson(low, high, (int)n.Fret);
                                                 }).ToArray(),
                                                 isRest: beat.IsRest
                                             )
                                         ).ToArray()
                                     )
                                 ).ToArray(),
-                                timeSigOverride: null // simple: rely on master bars above
+                                timeSigOverride: null
                             )
                         ).ToArray()
                     )
@@ -167,28 +138,14 @@ app.MapPost("/parse", async (HttpRequest req) =>
         }
     );
 
-    var jsonOpts = new JsonSerializerOptions
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        WriteIndented = true
-    };
-
+    var jsonOpts = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
     return Results.Text(JsonSerializer.Serialize(scoreJson, jsonOpts), "application/json");
 });
 
 app.Run();
 
-// ---- JSON models ----
-record ScoreJson(
-    string title,
-    string artist,
-    double tempo,
-    int ticksPerBeat,
-    TimeSigJson[] timeSignatures,
-    TrackJson[] tracks
-);
-
+// ------------ JSON models (types last, once) ------------
+record ScoreJson(string title, string artist, double tempo, int ticksPerBeat, TimeSigJson[] timeSignatures, TrackJson[] tracks);
 record TrackJson(string name, StaffJson[] staves);
 record StaffJson(int[] tuning, BarJson[] bars);
 record BarJson(int index, VoiceJson[] voices, TimeSigJson? timeSigOverride);
