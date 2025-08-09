@@ -1,3 +1,0 @@
-flask
-pyguitarpro==0.9.3
-# dummy change to force push
