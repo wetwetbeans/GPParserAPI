@@ -62,7 +62,7 @@ static string TuningsToLetters(int[] midiNumbers)
         if (m < 0 || m > 127) return "?";
         return noteNames[m % 12];
     });
-    return string.Concat(letters); // e.g., "EADGBE"
+    return string.Concat(letters);
 }
 
 // alphaTab 1.6.x: read numerator/denominator from MasterBar via props
@@ -88,7 +88,7 @@ static TimeSigJson[] CollectTimeSigs(Score s)
     return list.ToArray();
 }
 
-// Collect key signatures per master bar (reflection for version safety)
+// Collect key signatures per master bar
 static KeySigJson[] CollectKeySigs(Score s)
 {
     var list = new List<KeySigJson>();
@@ -97,8 +97,8 @@ static KeySigJson[] CollectKeySigs(Score s)
         for (int i = 0; i < s.MasterBars.Count; i++)
         {
             var mb = s.MasterBars[i];
-            var ksProp = mb.GetType().GetProperty("KeySignature");       // int flats/sharps
-            var kstProp = mb.GetType().GetProperty("KeySignatureType");   // 0=major, 1=minor
+            var ksProp = mb.GetType().GetProperty("KeySignature");
+            var kstProp = mb.GetType().GetProperty("KeySignatureType");
             if (ksProp != null)
             {
                 int ks = Convert.ToInt32(ksProp.GetValue(mb) ?? 0);
@@ -111,7 +111,7 @@ static KeySigJson[] CollectKeySigs(Score s)
     return list.ToArray();
 }
 
-// Collect tempo changes per master bar (reads automation if present)
+// Collect tempo changes per master bar
 static TempoChangeJson[] CollectTempos(Score s)
 {
     var list = new List<TempoChangeJson>();
@@ -196,26 +196,22 @@ app.MapPost("/parse", async (HttpRequest req) =>
     var staff = (tr.Staves != null && tr.Staves.Count > 0) ? tr.Staves[0] : null;
     if (staff == null) return Results.BadRequest("Selected track has no staves.");
 
-    // Top-level metadata (artist before title)
+    // Metadata
     var artist = !string.IsNullOrWhiteSpace(score.Artist) ? score.Artist : "(Unknown Artist)";
     var title = !string.IsNullOrWhiteSpace(score.Title) ? score.Title : "(Untitled)";
     var album = score.Album ?? "";
     var subtitle = score.SubTitle ?? "";
     var copyright = score.Copyright ?? "";
-    var musicBy = score.Music ?? "";      // composer
-    var wordsBy = score.Words ?? "";      // lyricist
-    var transcriber = score.Tab ?? "";        // tab author
+    var musicBy = score.Music ?? "";
+    var wordsBy = score.Words ?? "";
+    var transcriber = score.Tab ?? "";
     var instructions = score.Instructions ?? "";
-    var notices = score.Notices switch
-    {
-        string[] arr when arr.Length > 0 => arr,
-        IList<string> list when list.Count > 0 => list.ToArray(),
-        _ => Array.Empty<string>()
-    };
+    var notices = !string.IsNullOrWhiteSpace(score.Notices)
+        ? new[] { score.Notices }
+        : Array.Empty<string>();
 
-    // Global/top-of-file musical context
     var baseTempoBpm = score.Tempo > 0 ? score.Tempo : 120.0;
-    var ticksPerBeat = 480; // consistent with DisplayStart/Duration
+    var ticksPerBeat = 480;
     var globalTuning = Tunings(staff);
     var globalTuningText = TuningsToNoteNames(globalTuning);
     var globalTuningLetters = TuningsToLetters(globalTuning);
@@ -224,52 +220,39 @@ app.MapPost("/parse", async (HttpRequest req) =>
     var tempoChanges = CollectTempos(score);
 
     var scoreJson = new ScoreJson(
-        artist: artist,
-        title: title,
-        album: album,
-        subtitle: subtitle,
-        copyright: copyright,
-        musicBy: musicBy,
-        wordsBy: wordsBy,
-        transcriber: transcriber,
-        instructions: instructions,
-        notices: notices,
-        tempo: baseTempoBpm,
-        ticksPerBeat: ticksPerBeat,
-        globalTuning: globalTuning,
-        globalTuningText: globalTuningText,
-        globalTuningLetters: globalTuningLetters,
-        timeSignatures: timeSigs,
-        keySignatures: keySigs,
-        tempoChanges: tempoChanges,
-        tracks: new[] {
+        artist, title, album, subtitle, copyright,
+        musicBy, wordsBy, transcriber, instructions, notices,
+        baseTempoBpm, ticksPerBeat,
+        globalTuning, globalTuningText, globalTuningLetters,
+        timeSigs, keySigs, tempoChanges,
+        new[] {
             new TrackJson(
-                name: tr.Name ?? "",
-                staves: new[] {
+                tr.Name ?? "",
+                new[] {
                     new StaffJson(
-                        tuning: Tunings(staff),
-                        bars: (staff.Bars ?? new List<Bar>()).Select((bar, barIdx) =>
+                        Tunings(staff),
+                        (staff.Bars ?? new List<Bar>()).Select((bar, barIdx) =>
                             new BarJson(
-                                index: barIdx,
-                                voices: (bar.Voices ?? new List<Voice>()).Select(voice =>
+                                barIdx,
+                                (bar.Voices ?? new List<Voice>()).Select(voice =>
                                     new VoiceJson(
-                                        beats: (voice.Beats ?? new List<Beat>()).Select(beat =>
+                                        (voice.Beats ?? new List<Beat>()).Select(beat =>
                                             new BeatJson(
-                                                start: (int)Math.Round(beat.DisplayStart),
-                                                duration: (int)Math.Round(beat.DisplayDuration),
-                                                notes: (beat.Notes ?? new List<Note>()).Select(n =>
+                                                (int)Math.Round(beat.DisplayStart),
+                                                (int)Math.Round(beat.DisplayDuration),
+                                                (beat.Notes ?? new List<Note>()).Select(n =>
                                                 {
                                                     int stringCount = staff.StringTuning?.Tunings?.Count ?? 6;
-                                                    int low = (int)n.String; // 1..N, 1 = lowest (alphaTab)
-                                                    int high = stringCount > 0 ? (stringCount - low + 1) : low; // 1 = highest for tab UI
+                                                    int low = (int)n.String;
+                                                    int high = stringCount > 0 ? (stringCount - low + 1) : low;
                                                     return new NoteJson(low, high, (int)n.Fret);
                                                 }).ToArray(),
-                                                isRest: beat.IsRest
+                                                beat.IsRest
                                             )
                                         ).ToArray()
                                     )
                                 ).ToArray(),
-                                timeSigOverride: null
+                                null
                             )
                         ).ToArray()
                     )
