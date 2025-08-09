@@ -19,8 +19,13 @@ var apiKey = builder.Configuration["API_KEY"];
 var app = builder.Build();
 app.UseCors(allowAll);
 
-// Health
-app.MapGet("/", () => Results.Json(new { ok = true, service = "alphaTab GP parser", formats = "GP3–GP8" }));
+// Health check endpoint
+app.MapGet("/", () => Results.Json(new
+{
+    ok = true,
+    service = "alphaTab GP parser",
+    formats = "GP3–GP8"
+}));
 
 // ------------ helpers ------------
 static int[] Tunings(Staff s)
@@ -30,7 +35,6 @@ static int[] Tunings(Staff s)
     return list.Select(v => (int)Math.Round(v)).ToArray();
 }
 
-// alphaTab 1.6.x: read numerator/denominator from MasterBar via props
 static TimeSigJson[] CollectTimeSigs(Score s)
 {
     var list = new List<TimeSigJson>();
@@ -53,7 +57,7 @@ static TimeSigJson[] CollectTimeSigs(Score s)
     return list.ToArray();
 }
 
-// ------------ /parse ------------
+// ------------ /parse endpoint ------------
 app.MapPost("/parse", async (HttpRequest req) =>
 {
     if (!string.IsNullOrEmpty(apiKey))
@@ -62,26 +66,43 @@ app.MapPost("/parse", async (HttpRequest req) =>
             return Results.Unauthorized();
     }
 
-    if (!req.HasFormContentType) return Results.BadRequest("multipart/form-data required");
+    if (!req.HasFormContentType)
+        return Results.BadRequest("multipart/form-data required");
+
     var form = await req.ReadFormAsync();
     var file = form.Files.GetFile("file");
-    if (file == null || file.Length == 0) return Results.BadRequest("Upload .gp3/.gp4/.gp5/.gpx/.gp as 'file'");
+    if (file == null || file.Length == 0)
+        return Results.BadRequest("Upload .gp3/.gp4/.gp5/.gpx/.gp as 'file'");
 
     int? trackIndex = null;
-    if (form.TryGetValue("trackIndex", out var tiVal) && int.TryParse(tiVal, out var tiParsed)) trackIndex = tiParsed;
+    if (form.TryGetValue("trackIndex", out var tiVal) && int.TryParse(tiVal, out var tiParsed))
+        trackIndex = tiParsed;
 
     byte[] data;
-    using (var ms = new MemoryStream()) { await file.CopyToAsync(ms); data = ms.ToArray(); }
+    using (var ms = new MemoryStream())
+    {
+        await file.CopyToAsync(ms);
+        data = ms.ToArray();
+    }
 
     Score score;
-    try { score = ScoreLoader.LoadScoreFromBytes(data, new Settings()); }
-    catch (Exception ex) { return Results.BadRequest($"alphaTab failed to parse: {ex.Message}"); }
+    try
+    {
+        score = ScoreLoader.LoadScoreFromBytes(data, new Settings());
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest($"alphaTab failed to parse: {ex.Message}");
+    }
 
-    if (score.Tracks == null || score.Tracks.Count == 0) return Results.BadRequest("No tracks found.");
+    if (score.Tracks == null || score.Tracks.Count == 0)
+        return Results.BadRequest("No tracks found.");
 
     Track PickTrack()
     {
-        if (trackIndex is int idx && idx >= 0 && idx < score.Tracks.Count) return score.Tracks[idx];
+        if (trackIndex is int idx && idx >= 0 && idx < score.Tracks.Count)
+            return score.Tracks[idx];
+
         return score.Tracks.FirstOrDefault(t =>
             t.Staves != null &&
             t.Staves.Count > 0 &&
@@ -92,7 +113,8 @@ app.MapPost("/parse", async (HttpRequest req) =>
 
     var tr = PickTrack();
     var staff = (tr.Staves != null && tr.Staves.Count > 0) ? tr.Staves[0] : null;
-    if (staff == null) return Results.BadRequest("Selected track has no staves.");
+    if (staff == null)
+        return Results.BadRequest("Selected track has no staves.");
 
     var timeSigs = CollectTimeSigs(score);
 
@@ -138,8 +160,23 @@ app.MapPost("/parse", async (HttpRequest req) =>
         }
     );
 
-    var jsonOpts = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
+    var jsonOpts = new JsonSerializerOptions
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true
+    };
+
     return Results.Text(JsonSerializer.Serialize(scoreJson, jsonOpts), "application/json");
 });
 
 app.Run();
+
+// ------------ JSON models ------------
+record ScoreJson(string title, string artist, double tempo, int ticksPerBeat, TimeSigJson[] timeSignatures, TrackJson[] tracks);
+record TrackJson(string name, StaffJson[] staves);
+record StaffJson(int[] tuning, BarJson[] bars);
+record BarJson(int index, VoiceJson[] voices, TimeSigJson? timeSigOverride);
+record VoiceJson(BeatJson[] beats);
+record BeatJson(int start, int duration, NoteJson[] notes, bool isRest);
+record NoteJson(int @stringLow, int @stringHigh, int fret);
+record TimeSigJson(int numerator, int denominator, int barIndex);
