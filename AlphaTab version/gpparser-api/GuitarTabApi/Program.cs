@@ -143,13 +143,3 @@ app.MapPost("/parse", async (HttpRequest req) =>
 });
 
 app.Run();
-
-// ------------ JSON models (types last, once) ------------
-record ScoreJson(string title, string artist, double tempo, int ticksPerBeat, TimeSigJson[] timeSignatures, TrackJson[] tracks);
-record TrackJson(string name, StaffJson[] staves);
-record StaffJson(int[] tuning, BarJson[] bars);
-record BarJson(int index, VoiceJson[] voices, TimeSigJson? timeSigOverride);
-record VoiceJson(BeatJson[] beats);
-record BeatJson(int start, int duration, NoteJson[] notes, bool isRest);
-record NoteJson(int @stringLow, int @stringHigh, int fret);
-record TimeSigJson(int numerator, int denominator, int barIndex);
