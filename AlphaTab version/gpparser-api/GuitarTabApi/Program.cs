@@ -206,7 +206,12 @@ app.MapPost("/parse", async (HttpRequest req) =>
     var wordsBy = score.Words ?? "";      // lyricist
     var transcriber = score.Tab ?? "";        // tab author
     var instructions = score.Instructions ?? "";
-    var notices = (score.Notices != null && score.Notices.Count > 0) ? score.Notices.ToArray() : Array.Empty<string>();
+    var notices = score.Notices switch
+    {
+        string[] arr when arr.Length > 0 => arr,
+        IList<string> list when list.Count > 0 => list.ToArray(),
+        _ => Array.Empty<string>()
+    };
 
     // Global/top-of-file musical context
     var baseTempoBpm = score.Tempo > 0 ? score.Tempo : 120.0;
