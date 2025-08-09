@@ -98,15 +98,6 @@ app.MapPost("/parse", async (HttpRequest req) =>
     if (score.Tracks == null || score.Tracks.Count == 0)
         return Results.BadRequest("No tracks found.");
 
-    // --- New: fallback metadata extraction ---
-    string title = !string.IsNullOrWhiteSpace(score.Title)
-        ? score.Title
-        : score.MetaData?.GetValueOrDefault("title") ?? "";
-
-    string artist = !string.IsNullOrWhiteSpace(score.Artist)
-        ? score.Artist
-        : score.MetaData?.GetValueOrDefault("artist") ?? "";
-
     Track PickTrack()
     {
         if (trackIndex is int idx && idx >= 0 && idx < score.Tracks.Count)
@@ -126,6 +117,10 @@ app.MapPost("/parse", async (HttpRequest req) =>
         return Results.BadRequest("Selected track has no staves.");
 
     var timeSigs = CollectTimeSigs(score);
+
+    // Safe fallbacks for title/artist
+    var title = !string.IsNullOrWhiteSpace(score.Title) ? score.Title : "(Untitled)";
+    var artist = !string.IsNullOrWhiteSpace(score.Artist) ? score.Artist : "(Unknown Artist)";
 
     var scoreJson = new ScoreJson(
         title: title,
@@ -151,8 +146,8 @@ app.MapPost("/parse", async (HttpRequest req) =>
                                                 notes: (beat.Notes ?? new List<Note>()).Select(n =>
                                                 {
                                                     int stringCount = staff.StringTuning?.Tunings?.Count ?? 6;
-                                                    int low = (int)n.String; // 1..N, 1 = lowest (alphaTab)
-                                                    int high = stringCount > 0 ? (stringCount - low + 1) : low; // 1 = highest for tab UI
+                                                    int low = (int)n.String;
+                                                    int high = stringCount > 0 ? (stringCount - low + 1) : low;
                                                     return new NoteJson(low, high, (int)n.Fret);
                                                 }).ToArray(),
                                                 isRest: beat.IsRest
