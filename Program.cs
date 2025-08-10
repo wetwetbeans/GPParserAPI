@@ -15,54 +15,67 @@ app.UseCors(allowAll);
 
 app.MapGet("/", () => Results.Json(new { ok = true, service = "alphaTab GP parser", formats = "GP3–GP8" }));
 
+// Helper to extract optional slide types, bend, accentuation, etc.
+static string SafeEnum(object enumObj) => enumObj?.ToString() ?? "None";
+
 static BeatJsonExtended[] CollectBeats(Voice voice, Staff staff)
 {
-    return voice.Beats.Select(beat => new BeatJsonExtended(
-        (int)Math.Round(beat.DisplayStart),
-        (int)Math.Round(beat.DisplayDuration),
-        beat.IsRest,
-        beat.IsArpeggio,
-        beat.TupletGroup?.Numerator ?? 0,
-        beat.TupletGroup?.Denominator ?? 0,
-        beat.LetRing,
-        beat.PickStroke != default,
-        Array.Empty<int>(),
-        beat.IsTremoloPicking,
-        beat.PickStroke.ToString(),
-        beat.Chord?.Name ?? "",
-        beat.Text ?? ""
-    )
+    return voice.Beats.Select(beat =>
     {
-        Notes = beat.Notes?.Select(n => new NoteJsonExtended(
-            n.String,
-            staff.StringTuning.Tunings.Count - n.String + 1,
-            n.Fret,
-            n.IsTieDestination,
-            n.IsTieOrigin,
-            n.IsGhost,
-            n.IsGrace,
-            n.IsDead,
-            n.IsHarmonic,
-            n.IsPalmMute,
-            n.IsMuted,
-            n.IsLetRing,
-            n.IsTremoloPicking,
-            n.SlideInType.ToString(),
-            n.SlideOutType.ToString(),
-            n.IsHammerOn,
-            n.IsPullOff,
-            n.Vibrato,
-            n.Trill,
-            n.IsTapped,
-            n.HarmonicType.ToString(),
-            n.Bend?.ToString(),
-            n.Accentuated,
-            n.PickStroke.ToString(),
-            (int)n.LeftHandFinger,
-            (int)n.RightHandFinger,
-            n.VelocityPercent,
-            false
-        )).ToArray() ?? Array.Empty<NoteJsonExtended>()
+        var effects = beat.Effects ?? new BeatEffects();
+
+        return new BeatJsonExtended(
+            (int)Math.Round(beat.DisplayStart),
+            (int)Math.Round(beat.DisplayDuration),
+            beat.IsRest,
+            effects.Arpeggio != null,
+            effects.Tuplet?.Numerator ?? 0,
+            effects.Tuplet?.Denominator ?? 0,
+            effects.LetRing != null,
+            effects.Any(),
+            Array.Empty<int>(), // old beat.Beats removed
+            effects.TremoloPicking != null,
+            SafeEnum(effects.PickStroke),
+            beat.Chord?.Id,
+            beat.Text
+        )
+        {
+            Notes = beat.Notes?.Select(n =>
+            {
+                var neffects = n.Effects ?? new NoteEffects();
+
+                return new NoteJsonExtended(
+                    (int)n.String,
+                    staff.StringTuning.Tunings.Count - n.String + 1,
+                    (int)n.Fret,
+                    neffects.TieDestination != null,
+                    neffects.TieOrigin != null,
+                    neffects.Ghost != null,
+                    neffects.Grace != null,
+                    neffects.Dead != null,
+                    neffects.Harmonic != null,
+                    neffects.PalmMute != null,
+                    neffects.Mute != null,
+                    neffects.LetRing != null,
+                    neffects.TremoloPicking != null,
+                    SafeEnum(neffects.SlideInType),
+                    SafeEnum(neffects.SlideOutType),
+                    neffects.HammerOn != null,
+                    neffects.PullOff != null,
+                    neffects.Vibrato != null,
+                    neffects.Trill != null,
+                    neffects.Tap != null,
+                    neffects.HarmonicType.ToString(),
+                    neffects.Bend?.ToString(),
+                    neffects.Accentuation != null,
+                    SafeEnum(neffects.PickStroke),
+                    (int)(neffects.LeftHandFinger ?? Fingers.Unknown),
+                    (int)(neffects.RightHandFinger ?? Fingers.Unknown),
+                    neffects.VelocityPercent ?? 0,
+                    neffects.Any()
+                );
+            }).ToArray() ?? Array.Empty<NoteJsonExtended>()
+        };
     }).ToArray();
 }
 
@@ -95,14 +108,14 @@ app.MapPost("/parse", async (HttpRequest req) =>
         score.Copyright, score.Music, score.Words, score.Tab,
         score.Instructions, score.Notices?.Split('\n') ?? Array.Empty<string>(),
         score.Tempo, 480,
-        score.MasterBars.Select((mb, idx) =>
-            new TimeSigJson(mb.TimeSignatureNumerator, mb.TimeSignatureDenominator, idx)
+        score.MasterBars.Select(mb =>
+            new TimeSigJson(mb.TimeSignature.Numerator, mb.TimeSignature.Denominator, score.MasterBars.IndexOf(mb))
         ).ToArray(),
-        score.MasterBars.Select((mb, idx) =>
-            new KeySigJson((int)mb.KeySignature, (int)mb.KeySignatureType, idx)
+        score.MasterBars.Select(mb =>
+            new KeySigJson((int)mb.KeySignature, (int)mb.KeySignatureType, score.MasterBars.IndexOf(mb))
         ).ToArray(),
-        score.MasterBars.Select((mb, idx) =>
-            new TempoChangeJson(mb.TempoAutomation?.Value ?? score.Tempo, idx)
+        score.MasterBars.Select(mb =>
+            new TempoChangeJson(mb.TempoAutomation?.Value ?? score.Tempo, score.MasterBars.IndexOf(mb))
         ).ToArray(),
         score.Tracks.Select(track =>
             new TrackJsonExtended(
@@ -114,11 +127,12 @@ app.MapPost("/parse", async (HttpRequest req) =>
                             new BarJsonExtended(
                                 bar.Index,
                                 bar.Voices.Select(v => new VoiceJsonExtended(CollectBeats(v, staff))).ToArray(),
-                                bar.MasterBar.StartRepeat,
-                                bar.MasterBar.EndRepeat,
+                                bar.MasterBar.RepeatClose, // adjusted for new API
+                                bar.MasterBar.IsRepeatOpen,
+                                bar.MasterBar.IsRepeatClose,
                                 bar.MasterBar.AlternateEndings,
-                                bar.MasterBar.BarMarker,
-                                bar.MasterBar.IsSimileMark
+                                bar.MasterBar.Marker?.Title,
+                                bar.MasterBar.IsSimile
                             )
                         ).ToArray()
                     )
@@ -133,18 +147,27 @@ app.MapPost("/parse", async (HttpRequest req) =>
 
 app.Run();
 
-record ScoreJsonExtended(string artist, string title, string album, string subtitle,
+// --- Extended JSON models (record types) ---
+
+record ScoreJsonExtended(
+    string artist, string title, string album, string subtitle,
     string copyright, string musicBy, string wordsBy, string transcriber,
     string instructions, string[] notices, double tempo, int ticksPerBeat,
     TimeSigJson[] timeSignatures, KeySigJson[] keySignatures, TempoChangeJson[] tempoChanges,
-    TrackJsonExtended[] tracks);
+    TrackJsonExtended[] tracks
+);
 
 record TrackJsonExtended(string name, StaffJsonExtended[] staves);
+
 record StaffJsonExtended(int[] tuning, BarJsonExtended[] bars);
+
 record BarJsonExtended(int index, VoiceJsonExtended[] voices,
     int repeatCount, bool startRepeat, bool endRepeat,
-    int alternateEndingNumber, string barMarker, bool isSimileMark);
+    int alternateEndingNumber, string barMarker, bool isSimileMark
+);
+
 record VoiceJsonExtended(BeatJsonExtended[] beats);
+
 record BeatJsonExtended(int start, int duration, bool isRest,
     bool isArpeggio, int tupletNumerator, int tupletDenominator,
     bool letRing, bool beatEffects, int[] beatStarts,
@@ -152,13 +175,17 @@ record BeatJsonExtended(int start, int duration, bool isRest,
 {
     public NoteJsonExtended[] Notes { get; set; }
 }
-record NoteJsonExtended(int stringLow, int stringHigh, int fret, bool isTieDestination, bool isTieOrigin,
+
+record NoteJsonExtended(
+    int stringLow, int stringHigh, int fret, bool isTieDestination, bool isTieOrigin,
     bool isGhost, bool isGrace, bool isDead, bool isHarmonic,
     bool isPalmMute, bool isMuted, bool isLetRing, bool isTremoloPicking,
     string slideInType, string slideOutType, bool isHammerOn, bool isPullOff,
     bool vibrato, bool trill, bool isTapped, string harmonicType,
     string bend, bool accentuated, string pickStroke,
-    int leftHandFinger, int rightHandFinger, int velocity, bool noteEffects);
+    int leftHandFinger, int rightHandFinger, int velocity, bool noteEffects
+);
+
 record TimeSigJson(int numerator, int denominator, int barIndex);
 record KeySigJson(int key, int type, int barIndex);
 record TempoChangeJson(double bpm, int barIndex);
