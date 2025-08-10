@@ -15,64 +15,61 @@ app.UseCors(allowAll);
 
 app.MapGet("/", () => Results.Json(new { ok = true, service = "alphaTab GP parser", formats = "GP3–GP8" }));
 
-// Helper to extract optional slide types, bend, accentuation, etc.
-static string SafeEnum(object enumObj) => enumObj?.ToString() ?? "None";
+// Helper to safely stringify enums or nullables
+static string SafeEnum(object? enumObj) => enumObj?.ToString() ?? "None";
 
 static BeatJsonExtended[] CollectBeats(Voice voice, Staff staff)
 {
     return voice.Beats.Select(beat =>
     {
-        var effects = beat.Effects ?? new BeatEffects();
-
+        // AlphaTab 1.6.x: Effects are now properties on Beat and Note directly
         return new BeatJsonExtended(
-            (int)Math.Round(beat.DisplayStart),
-            (int)Math.Round(beat.DisplayDuration),
+            (int)Math.Round(beat.Start),          // DisplayStart removed, use Start
+            (int)Math.Round(beat.Duration),       // DisplayDuration removed, use Duration
             beat.IsRest,
-            effects.Arpeggio != null,
-            effects.Tuplet?.Numerator ?? 0,
-            effects.Tuplet?.Denominator ?? 0,
-            effects.LetRing != null,
-            effects.Any(),
-            Array.Empty<int>(), // old beat.Beats removed
-            effects.TremoloPicking != null,
-            SafeEnum(effects.PickStroke),
-            beat.Chord?.Id,
+            beat.Arpeggio != null,
+            beat.TupletNumerator,
+            beat.TupletDenominator,
+            beat.LetRing,
+            beat.HasAnyEffect, // direct check
+            Array.Empty<int>(),
+            beat.TremoloPicking != null,
+            SafeEnum(beat.PickStroke),
+            beat.Chord?.Name, // Id removed, using Name or null
             beat.Text
         )
         {
             Notes = beat.Notes?.Select(n =>
             {
-                var neffects = n.Effects ?? new NoteEffects();
-
                 return new NoteJsonExtended(
                     (int)n.String,
                     staff.StringTuning.Tunings.Count - n.String + 1,
                     (int)n.Fret,
-                    neffects.TieDestination != null,
-                    neffects.TieOrigin != null,
-                    neffects.Ghost != null,
-                    neffects.Grace != null,
-                    neffects.Dead != null,
-                    neffects.Harmonic != null,
-                    neffects.PalmMute != null,
-                    neffects.Mute != null,
-                    neffects.LetRing != null,
-                    neffects.TremoloPicking != null,
-                    SafeEnum(neffects.SlideInType),
-                    SafeEnum(neffects.SlideOutType),
-                    neffects.HammerOn != null,
-                    neffects.PullOff != null,
-                    neffects.Vibrato != null,
-                    neffects.Trill != null,
-                    neffects.Tap != null,
-                    neffects.HarmonicType.ToString(),
-                    neffects.Bend?.ToString(),
-                    neffects.Accentuation != null,
-                    SafeEnum(neffects.PickStroke),
-                    (int)(neffects.LeftHandFinger ?? Fingers.Unknown),
-                    (int)(neffects.RightHandFinger ?? Fingers.Unknown),
-                    neffects.VelocityPercent ?? 0,
-                    neffects.Any()
+                    n.TieDestination != null,
+                    n.TieOrigin != null,
+                    n.IsGhost,
+                    n.IsGrace,
+                    n.IsDead,
+                    n.IsHarmonic,
+                    n.PalmMute,
+                    n.Mute,
+                    n.LetRing,
+                    n.TremoloPicking != null,
+                    SafeEnum(n.SlideInType),
+                    SafeEnum(n.SlideOutType),
+                    n.HammerOn,
+                    n.PullOff,
+                    n.Vibrato,
+                    n.Trill != null,
+                    n.Tap,
+                    SafeEnum(n.HarmonicType),
+                    n.Bend != null ? n.Bend.ToString() : "",
+                    n.Accentuated,
+                    SafeEnum(n.PickStroke),
+                    (int)(n.LeftHandFinger ?? Fingers.Unknown),
+                    (int)(n.RightHandFinger ?? Fingers.Unknown),
+                    n.VelocityPercent ?? 0,
+                    n.HasAnyEffect
                 );
             }).ToArray() ?? Array.Empty<NoteJsonExtended>()
         };
@@ -108,14 +105,14 @@ app.MapPost("/parse", async (HttpRequest req) =>
         score.Copyright, score.Music, score.Words, score.Tab,
         score.Instructions, score.Notices?.Split('\n') ?? Array.Empty<string>(),
         score.Tempo, 480,
-        score.MasterBars.Select(mb =>
-            new TimeSigJson(mb.TimeSignature.Numerator, mb.TimeSignature.Denominator, score.MasterBars.IndexOf(mb))
+        score.MasterBars.Select((mb, idx) =>
+            new TimeSigJson(mb.TimeSignatureNumerator, mb.TimeSignatureDenominator, idx)
         ).ToArray(),
-        score.MasterBars.Select(mb =>
-            new KeySigJson((int)mb.KeySignature, (int)mb.KeySignatureType, score.MasterBars.IndexOf(mb))
+        score.MasterBars.Select((mb, idx) =>
+            new KeySigJson((int)mb.KeySignature, (int)mb.KeySignatureType, idx)
         ).ToArray(),
-        score.MasterBars.Select(mb =>
-            new TempoChangeJson(mb.TempoAutomation?.Value ?? score.Tempo, score.MasterBars.IndexOf(mb))
+        score.MasterBars.Select((mb, idx) =>
+            new TempoChangeJson(mb.Tempo, idx)
         ).ToArray(),
         score.Tracks.Select(track =>
             new TrackJsonExtended(
@@ -127,12 +124,12 @@ app.MapPost("/parse", async (HttpRequest req) =>
                             new BarJsonExtended(
                                 bar.Index,
                                 bar.Voices.Select(v => new VoiceJsonExtended(CollectBeats(v, staff))).ToArray(),
-                                bar.MasterBar.RepeatClose, // adjusted for new API
+                                bar.MasterBar.RepeatCount,
                                 bar.MasterBar.IsRepeatOpen,
                                 bar.MasterBar.IsRepeatClose,
                                 bar.MasterBar.AlternateEndings,
-                                bar.MasterBar.Marker?.Title,
-                                bar.MasterBar.IsSimile
+                                bar.MasterBar.Marker?.Title ?? "",
+                                bar.MasterBar.IsSimileMark
                             )
                         ).ToArray()
                     )

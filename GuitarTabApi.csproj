@@ -6,7 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- alphaTab brings the correct AlphaSkia transitively -->
-<PackageReference Include="AlphaTab" Version="1.5.3" />
+    <!-- Use AlphaTab 1.6.x -->
+    <PackageReference Include="AlphaTab" Version="1.6.1" />
   </ItemGroup>
 </Project>
