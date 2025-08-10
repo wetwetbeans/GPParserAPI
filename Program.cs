@@ -1,85 +1,140 @@
-﻿using System.Text.Json;
-using AlphaTab;
+﻿using AlphaTab;
 using AlphaTab.Importer;
 using AlphaTab.Model;
 using Microsoft.AspNetCore.Http.Features;
-using System.Linq;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Upload size
 builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 20 * 1024 * 1024);
+
+// CORS
 var allowAll = "AllowAll";
 builder.Services.AddCors(o => o.AddPolicy(allowAll, p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
+
+// Optional API key
 var apiKey = builder.Configuration["API_KEY"];
+
 var app = builder.Build();
 app.UseCors(allowAll);
 
+// Health check
 app.MapGet("/", () => Results.Json(new { ok = true, service = "alphaTab GP parser", formats = "GP3–GP8" }));
 
-// Helper to safely stringify enums or nullables
-static string SafeEnum(object? enumObj) => enumObj?.ToString() ?? "None";
-
-static BeatJsonExtended[] CollectBeats(Voice voice, Staff staff)
+// ------------ helpers ------------
+static int[] Tunings(Staff s)
 {
-    return voice.Beats.Select(beat =>
-    {
-        // AlphaTab 1.6.x: Effects are now properties on Beat and Note directly
-        return new BeatJsonExtended(
-            (int)Math.Round(beat.Start),          // DisplayStart removed, use Start
-            (int)Math.Round(beat.Duration),       // DisplayDuration removed, use Duration
-            beat.IsRest,
-            beat.Arpeggio != null,
-            beat.TupletNumerator,
-            beat.TupletDenominator,
-            beat.LetRing,
-            beat.HasAnyEffect, // direct check
-            Array.Empty<int>(),
-            beat.TremoloPicking != null,
-            SafeEnum(beat.PickStroke),
-            beat.Chord?.Name, // Id removed, using Name or null
-            beat.Text
-        )
-        {
-            Notes = beat.Notes?.Select(n =>
-            {
-                return new NoteJsonExtended(
-                    (int)n.String,
-                    staff.StringTuning.Tunings.Count - n.String + 1,
-                    (int)n.Fret,
-                    n.TieDestination != null,
-                    n.TieOrigin != null,
-                    n.IsGhost,
-                    n.IsGrace,
-                    n.IsDead,
-                    n.IsHarmonic,
-                    n.PalmMute,
-                    n.Mute,
-                    n.LetRing,
-                    n.TremoloPicking != null,
-                    SafeEnum(n.SlideInType),
-                    SafeEnum(n.SlideOutType),
-                    n.HammerOn,
-                    n.PullOff,
-                    n.Vibrato,
-                    n.Trill != null,
-                    n.Tap,
-                    SafeEnum(n.HarmonicType),
-                    n.Bend != null ? n.Bend.ToString() : "",
-                    n.Accentuated,
-                    SafeEnum(n.PickStroke),
-                    (int)(n.LeftHandFinger ?? Fingers.Unknown),
-                    (int)(n.RightHandFinger ?? Fingers.Unknown),
-                    n.VelocityPercent ?? 0,
-                    n.HasAnyEffect
-                );
-            }).ToArray() ?? Array.Empty<NoteJsonExtended>()
-        };
-    }).ToArray();
+    var list = s.StringTuning?.Tunings;
+    if (list == null || list.Count == 0) return Array.Empty<int>();
+    return list.Select(v => (int)Math.Round(v)).ToArray();
 }
 
+static TimeSigJson[] CollectTimeSigs(Score s)
+{
+    var list = new List<TimeSigJson>();
+    try
+    {
+        for (int i = 0; i < s.MasterBars.Count; i++)
+        {
+            var mb = s.MasterBars[i];
+            var numProp = mb.GetType().GetProperty("TimeSignatureNumerator");
+            var denProp = mb.GetType().GetProperty("TimeSignatureDenominator");
+            if (numProp != null && denProp != null)
+            {
+                int num = Convert.ToInt32(numProp.GetValue(mb) ?? 0);
+                int den = Convert.ToInt32(denProp.GetValue(mb) ?? 0);
+                if (num > 0 && den > 0) list.Add(new TimeSigJson(num, den, i));
+            }
+        }
+    }
+    catch { }
+    return list.ToArray();
+}
+
+static KeySigJson[] CollectKeySigs(Score s)
+{
+    var list = new List<KeySigJson>();
+    try
+    {
+        for (int i = 0; i < s.MasterBars.Count; i++)
+        {
+            var mb = s.MasterBars[i];
+            var ksProp = mb.GetType().GetProperty("KeySignature");
+            var kstProp = mb.GetType().GetProperty("KeySignatureType");
+            if (ksProp != null)
+            {
+                int ks = Convert.ToInt32(ksProp.GetValue(mb) ?? 0);
+                int kst = kstProp != null ? Convert.ToInt32(kstProp.GetValue(mb) ?? 0) : 0;
+                list.Add(new KeySigJson(ks, kst, i));
+            }
+        }
+    }
+    catch { }
+    return list.ToArray();
+}
+
+static TempoChangeJson[] CollectTempos(Score s)
+{
+    var list = new List<TempoChangeJson>();
+    try
+    {
+        for (int i = 0; i < s.MasterBars.Count; i++)
+        {
+            var mb = s.MasterBars[i];
+            var tempoAutoProp = mb.GetType().GetProperty("TempoAutomation");
+            if (tempoAutoProp != null)
+            {
+                var auto = tempoAutoProp.GetValue(mb);
+                if (auto != null)
+                {
+                    var valueProp = auto.GetType().GetProperty("Value");
+                    if (valueProp != null)
+                    {
+                        double bpm = Convert.ToDouble(valueProp.GetValue(auto) ?? 0);
+                        if (bpm > 0) list.Add(new TempoChangeJson(bpm, i));
+                    }
+                }
+            }
+        }
+    }
+    catch { }
+    return list.ToArray();
+}
+
+// Safe helpers
+static bool GetIsGrace(Note n)
+{
+    var prop = typeof(Note).GetProperty("GraceType");
+    if (prop != null)
+    {
+        var val = prop.GetValue(n);
+        if (val != null && val.ToString() != "None") return true;
+    }
+    return false;
+}
+
+static int GetVelocity(Note n)
+{
+    var prop = typeof(Note).GetProperty("VelocityPercent") ?? typeof(Note).GetProperty("Velocity");
+    if (prop != null)
+    {
+        var val = prop.GetValue(n);
+        if (val != null && int.TryParse(val.ToString(), out int v))
+            return v;
+    }
+    return 0;
+}
+
+// ------------ /parse endpoint ------------
 app.MapPost("/parse", async (HttpRequest req) =>
 {
-    if (!string.IsNullOrEmpty(apiKey) && (!req.Headers.TryGetValue("x-api-key", out var key) || key != apiKey))
-        return Results.Unauthorized();
+    if (!string.IsNullOrEmpty(apiKey))
+    {
+        if (!req.Headers.TryGetValue("x-api-key", out var key) || key != apiKey)
+            return Results.Unauthorized();
+    }
+
     if (!req.HasFormContentType)
         return Results.BadRequest("multipart/form-data required");
 
@@ -89,47 +144,99 @@ app.MapPost("/parse", async (HttpRequest req) =>
         return Results.BadRequest("Upload .gp3/.gp4/.gp5/.gpx/.gp as 'file'");
 
     byte[] data;
-    using var ms = new MemoryStream();
-    await file.CopyToAsync(ms);
-    data = ms.ToArray();
+    using (var ms = new MemoryStream())
+    {
+        await file.CopyToAsync(ms);
+        data = ms.ToArray();
+    }
 
     Score score;
-    try { score = ScoreLoader.LoadScoreFromBytes(data, new Settings()); }
-    catch (Exception ex) { return Results.BadRequest($"alphaTab failed to parse: {ex.Message}"); }
+    try
+    {
+        score = ScoreLoader.LoadScoreFromBytes(data, new Settings());
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest($"alphaTab failed to parse: {ex.Message}");
+    }
 
     if (score.Tracks == null || score.Tracks.Count == 0)
         return Results.BadRequest("No tracks found.");
 
-    var scoreJson = new ScoreJsonExtended(
-        score.Artist, score.Title, score.Album, score.SubTitle,
-        score.Copyright, score.Music, score.Words, score.Tab,
-        score.Instructions, score.Notices?.Split('\n') ?? Array.Empty<string>(),
-        score.Tempo, 480,
-        score.MasterBars.Select((mb, idx) =>
-            new TimeSigJson(mb.TimeSignatureNumerator, mb.TimeSignatureDenominator, idx)
-        ).ToArray(),
-        score.MasterBars.Select((mb, idx) =>
-            new KeySigJson((int)mb.KeySignature, (int)mb.KeySignatureType, idx)
-        ).ToArray(),
-        score.MasterBars.Select((mb, idx) =>
-            new TempoChangeJson(mb.Tempo, idx)
-        ).ToArray(),
+    var scoreJson = new ScoreJson(
+        score.Artist ?? "(Unknown Artist)",
+        score.Title ?? "(Untitled)",
+        score.Album ?? "",
+        score.SubTitle ?? "",
+        score.Copyright ?? "",
+        score.Music ?? "",
+        score.Words ?? "",
+        score.Tab ?? "",
+        score.Instructions ?? "",
+        string.IsNullOrWhiteSpace(score.Notices) ? Array.Empty<string>() : new[] { score.Notices },
+        score.Tempo > 0 ? score.Tempo : 120.0,
+        480,
+        Array.Empty<int>(),
+        Array.Empty<string>(),
+        "",
+        CollectTimeSigs(score),
+        CollectKeySigs(score),
+        CollectTempos(score),
         score.Tracks.Select(track =>
-            new TrackJsonExtended(
-                track.Name,
+            new TrackJson(
+                track.Name ?? "",
                 track.Staves.Select(staff =>
-                    new StaffJsonExtended(
-                        staff.StringTuning?.Tunings.Select(v => (int)Math.Round(v)).ToArray() ?? Array.Empty<int>(),
-                        staff.Bars.Select(bar =>
-                            new BarJsonExtended(
-                                bar.Index,
-                                bar.Voices.Select(v => new VoiceJsonExtended(CollectBeats(v, staff))).ToArray(),
-                                bar.MasterBar.RepeatCount,
-                                bar.MasterBar.IsRepeatOpen,
-                                bar.MasterBar.IsRepeatClose,
-                                bar.MasterBar.AlternateEndings,
-                                bar.MasterBar.Marker?.Title ?? "",
-                                bar.MasterBar.IsSimileMark
+                    new StaffJson(
+                        Tunings(staff),
+                        (staff.Bars ?? new List<Bar>()).Select((bar, barIdx) =>
+                            new BarJson(
+                                barIdx,
+                                (bar.Voices ?? new List<Voice>()).Select(voice =>
+                                    new VoiceJson(
+                                        (voice.Beats ?? new List<Beat>()).Select(beat =>
+                                            new BeatJson(
+                                                (int)Math.Round(beat.DisplayStart),
+                                                (int)Math.Round(beat.DisplayDuration),
+                                                (beat.Notes ?? new List<Note>()).Select(n =>
+                                                {
+                                                    int stringCount = staff.StringTuning?.Tunings?.Count ?? 6;
+                                                    int low = (int)n.String;
+                                                    int high = stringCount > 0 ? (stringCount - low + 1) : low;
+
+                                                    return new NoteJson(
+                                                        low,
+                                                        high,
+                                                        (int)n.Fret,
+                                                        n.IsTieDestination,
+                                                        n.IsGhost,
+                                                        GetIsGrace(n),
+                                                        n.IsDead,
+                                                        n.IsHarmonic,
+                                                        n.IsPalmMute,
+                                                        GetVelocity(n),
+                                                        n.IsLetRing,
+                                                        n.IsStaccato,
+                                                        n.IsHammerPullOrigin,
+                                                        n.IsHammerPullDestination,
+                                                        n.IsSlurOrigin,
+                                                        n.IsSlurDestination,
+                                                        (int)n.SlideInType,
+                                                        (int)n.SlideOutType,
+                                                        (int)n.BendType,
+                                                        n.BendPoints?.Select(bp => new BendPointJson(bp.Offset, bp.Value)).ToArray() ?? Array.Empty<BendPointJson>(),
+                                                        (int)n.Vibrato,
+                                                        n.HarmonicValue,
+                                                        n.IsTrill,
+                                                        n.TrillValue,
+                                                        (int)n.TrillSpeed
+                                                    );
+                                                }).ToArray(),
+                                                beat.IsRest
+                                            )
+                                        ).ToArray()
+                                    )
+                                ).ToArray(),
+                                null
                             )
                         ).ToArray()
                     )
@@ -138,51 +245,75 @@ app.MapPost("/parse", async (HttpRequest req) =>
         ).ToArray()
     );
 
-    var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
-    return Results.Text(JsonSerializer.Serialize(scoreJson, options), "application/json");
+    var jsonOpts = new JsonSerializerOptions
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true
+    };
+
+    return Results.Text(JsonSerializer.Serialize(scoreJson, jsonOpts), "application/json");
 });
 
 app.Run();
 
-// --- Extended JSON models (record types) ---
-
-record ScoreJsonExtended(
-    string artist, string title, string album, string subtitle,
-    string copyright, string musicBy, string wordsBy, string transcriber,
-    string instructions, string[] notices, double tempo, int ticksPerBeat,
-    TimeSigJson[] timeSignatures, KeySigJson[] keySignatures, TempoChangeJson[] tempoChanges,
-    TrackJsonExtended[] tracks
+// ------------ JSON models ------------
+record ScoreJson(
+    string artist,
+    string title,
+    string album,
+    string subtitle,
+    string copyright,
+    string musicBy,
+    string wordsBy,
+    string transcriber,
+    string instructions,
+    string[] notices,
+    double tempo,
+    int ticksPerBeat,
+    int[] globalTuning,
+    string[] globalTuningText,
+    string globalTuningLetters,
+    TimeSigJson[] timeSignatures,
+    KeySigJson[] keySignatures,
+    TempoChangeJson[] tempoChanges,
+    TrackJson[] tracks
 );
 
-record TrackJsonExtended(string name, StaffJsonExtended[] staves);
+record TrackJson(string name, StaffJson[] staves);
+record StaffJson(int[] tuning, BarJson[] bars);
+record BarJson(int index, VoiceJson[] voices, TimeSigJson? timeSigOverride);
+record VoiceJson(BeatJson[] beats);
+record BeatJson(int start, int duration, NoteJson[] notes, bool isRest);
 
-record StaffJsonExtended(int[] tuning, BarJsonExtended[] bars);
-
-record BarJsonExtended(int index, VoiceJsonExtended[] voices,
-    int repeatCount, bool startRepeat, bool endRepeat,
-    int alternateEndingNumber, string barMarker, bool isSimileMark
+record NoteJson(
+    int @stringLow,
+    int @stringHigh,
+    int fret,
+    bool isTieDestination,
+    bool isGhost,
+    bool isGrace,
+    bool isDead,
+    bool isHarmonic,
+    bool isPalmMute,
+    int velocity,
+    bool isLetRing,
+    bool isStaccato,
+    bool isHammerPullOrigin,
+    bool isHammerPullDestination,
+    bool isSlurOrigin,
+    bool isSlurDestination,
+    int slideInType,
+    int slideOutType,
+    int bendType,
+    BendPointJson[] bendPoints,
+    int vibratoType,
+    double harmonicValue,
+    bool isTrill,
+    double trillValue,
+    int trillSpeed
 );
 
-record VoiceJsonExtended(BeatJsonExtended[] beats);
-
-record BeatJsonExtended(int start, int duration, bool isRest,
-    bool isArpeggio, int tupletNumerator, int tupletDenominator,
-    bool letRing, bool beatEffects, int[] beatStarts,
-    bool isTremoloPicking, string pickStroke, string chordId, string beatText)
-{
-    public NoteJsonExtended[] Notes { get; set; }
-}
-
-record NoteJsonExtended(
-    int stringLow, int stringHigh, int fret, bool isTieDestination, bool isTieOrigin,
-    bool isGhost, bool isGrace, bool isDead, bool isHarmonic,
-    bool isPalmMute, bool isMuted, bool isLetRing, bool isTremoloPicking,
-    string slideInType, string slideOutType, bool isHammerOn, bool isPullOff,
-    bool vibrato, bool trill, bool isTapped, string harmonicType,
-    string bend, bool accentuated, string pickStroke,
-    int leftHandFinger, int rightHandFinger, int velocity, bool noteEffects
-);
-
+record BendPointJson(double offset, double value);
 record TimeSigJson(int numerator, int denominator, int barIndex);
 record KeySigJson(int key, int type, int barIndex);
 record TempoChangeJson(double bpm, int barIndex);
