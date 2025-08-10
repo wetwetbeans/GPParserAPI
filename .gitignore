@@ -1,0 +1,25 @@
+﻿# Ignore build outputs
+bin/
+obj/
+
+# Ignore user-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Ignore Visual Studio temp files
+.vs/
+
+# Ignore logs
+*.log
+
+# Ignore configuration
+appsettings*.json
+
+# Ignore OS generated files
+.DS_Store
+Thumbs.db
+
+# Ignore temp folders
+temp/

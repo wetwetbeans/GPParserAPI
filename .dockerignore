@@ -1,0 +1,15 @@
+﻿# Ignore local build output
+bin/
+obj/
+
+# Ignore git folder
+.git
+.gitignore
+
+# Ignore OS and IDE junk
+.vs
+.DS_Store
+Thumbs.db
+
+# Ignore user secrets or local config
+appsettings*.json
