@@ -3,6 +3,7 @@ using AlphaTab.Importer;
 using AlphaTab.Model;
 using Microsoft.AspNetCore.Http.Features;
 using System.Text.Json;
+using System.Linq;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -13,6 +14,7 @@ builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 20 * 1
 var allowAll = "AllowAll";
 builder.Services.AddCors(o => o.AddPolicy(allowAll, p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
 
+// Optional API key
 var apiKey = builder.Configuration["API_KEY"];
 
 var app = builder.Build();
@@ -101,6 +103,7 @@ static TempoChangeJson[] CollectTempos(Score s)
     return list.ToArray();
 }
 
+// Safe helpers
 static bool GetIsGrace(Note n)
 {
     var prop = typeof(Note).GetProperty("GraceType");
@@ -122,49 +125,6 @@ static int GetVelocity(Note n)
             return v;
     }
     return 0;
-}
-
-// Auto-grouping timing fix
-static (bool origin, bool destination) GetFixedLegatoFlags(Note note, int beatIndex, List<Beat> beats, int maxTickGap = 120)
-{
-    bool origin = note.IsHammerPullOrigin;
-    bool destination = note.IsHammerPullDestination;
-
-    int currentStart = beats[beatIndex].DisplayStart;
-
-    // Check previous note
-    for (int pb = beatIndex - 1; pb >= 0; pb--)
-    {
-        var prevBeat = beats[pb];
-        var prevNote = prevBeat?.Notes?.FirstOrDefault(n => n.String == note.String);
-        if (prevNote != null)
-        {
-            int gap = currentStart - prevBeat.DisplayStart;
-            if (gap <= maxTickGap && (prevNote.IsHammerPullOrigin || prevNote.IsHammerPullDestination))
-            {
-                destination = true;
-            }
-            break;
-        }
-    }
-
-    // Check next note
-    for (int nb = beatIndex + 1; nb < beats.Count; nb++)
-    {
-        var nextBeat = beats[nb];
-        var nextNote = nextBeat?.Notes?.FirstOrDefault(n => n.String == note.String);
-        if (nextNote != null)
-        {
-            int gap = nextBeat.DisplayStart - currentStart;
-            if (gap <= maxTickGap && (nextNote.IsHammerPullDestination || nextNote.IsHammerPullOrigin))
-            {
-                origin = true;
-            }
-            break;
-        }
-    }
-
-    return (origin, destination);
 }
 
 // ------------ /parse endpoint ------------
@@ -234,17 +194,15 @@ app.MapPost("/parse", async (HttpRequest req) =>
                                 barIdx,
                                 (bar.Voices ?? new List<Voice>()).Select(voice =>
                                     new VoiceJson(
-                                        (voice.Beats ?? new List<Beat>()).Select((beat, beatIndex) =>
+                                        (voice.Beats ?? new List<Beat>()).Select(beat =>
                                             new BeatJson(
-                                                (int)Math.Round(beat.DisplayStart),
-                                                (int)Math.Round(beat.DisplayDuration),
-                                                (beat.Notes ?? new List<Note>()).Select(n =>
+                                                (int)Math.Round(beat?.DisplayStart ?? 0),
+                                                (int)Math.Round(beat?.DisplayDuration ?? 0),
+                                                (beat?.Notes ?? new List<Note>()).Select(n =>
                                                 {
                                                     int stringCount = staff.StringTuning?.Tunings?.Count ?? 6;
                                                     int low = (int)n.String;
                                                     int high = stringCount > 0 ? (stringCount - low + 1) : low;
-
-                                                    var (fixedOrigin, fixedDestination) = GetFixedLegatoFlags(n, beatIndex, voice.Beats);
 
                                                     return new NoteJson(
                                                         low,
@@ -259,8 +217,8 @@ app.MapPost("/parse", async (HttpRequest req) =>
                                                         GetVelocity(n),
                                                         n.IsLetRing,
                                                         n.IsStaccato,
-                                                        fixedOrigin,
-                                                        fixedDestination,
+                                                        n.IsHammerPullOrigin,
+                                                        n.IsHammerPullDestination,
                                                         n.IsSlurOrigin,
                                                         n.IsSlurDestination,
                                                         (int)n.SlideInType,
@@ -274,7 +232,7 @@ app.MapPost("/parse", async (HttpRequest req) =>
                                                         (int)n.TrillSpeed
                                                     );
                                                 }).ToArray(),
-                                                beat.IsRest
+                                                beat?.IsRest ?? false
                                             )
                                         ).ToArray()
                                     )
