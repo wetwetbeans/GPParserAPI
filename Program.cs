@@ -126,6 +126,61 @@ static int GetVelocity(Note n)
     return 0;
 }
 
+// ------------ chain fix ------------
+static void FixHammerPullChains(Score score)
+{
+    foreach (var track in score.Tracks)
+    {
+        foreach (var staff in track.Staves)
+        {
+            foreach (var bar in staff.Bars)
+            {
+                foreach (var voice in bar.Voices)
+                {
+                    var beats = voice.Beats;
+                    if (beats == null) continue;
+
+                    for (int b = 0; b < beats.Count; b++)
+                    {
+                        var beat = beats[b];
+                        if (beat?.Notes == null) continue;
+
+                        foreach (var note in beat.Notes)
+                        {
+                            // Only process hammer/pull participants
+                            if (!note.IsHammerPullOrigin && !note.IsHammerPullDestination) continue;
+
+                            // Find previous note on same string
+                            for (int pb = b - 1; pb >= 0; pb--)
+                            {
+                                var prevBeat = beats[pb];
+                                var prevNote = prevBeat?.Notes?.FirstOrDefault(n => n.String == note.String);
+                                if (prevNote != null && prevNote.IsHammerPullOrigin)
+                                {
+                                    note.IsHammerPullDestination = true;
+                                    break;
+                                }
+                            }
+
+                            // Find next note on same string
+                            for (int nb = b + 1; nb < beats.Count; nb++)
+                            {
+                                var nextBeat = beats[nb];
+                                var nextNote = nextBeat?.Notes?.FirstOrDefault(n => n.String == note.String);
+                                if (nextNote != null && nextNote.IsHammerPullDestination)
+                                {
+                                    note.IsHammerPullOrigin = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ------------ /parse endpoint ------------
 app.MapPost("/parse", async (HttpRequest req) =>
 {
@@ -162,6 +217,9 @@ app.MapPost("/parse", async (HttpRequest req) =>
 
     if (score.Tracks == null || score.Tracks.Count == 0)
         return Results.BadRequest("No tracks found.");
+
+    // Apply hammer/pull chain fix before export
+    FixHammerPullChains(score);
 
     var scoreJson = new ScoreJson(
         score.Artist ?? "(Unknown Artist)",
