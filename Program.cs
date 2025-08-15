@@ -134,6 +134,7 @@ app.MapGet("/gprosearch", async (string q, string type) =>
 });
 
 // =========================================
+// =========================================
 // GProTab artist songs endpoint
 // =========================================
 app.MapGet("/gproartist", async (string url) =>
@@ -154,10 +155,16 @@ app.MapGet("/gproartist", async (string url) =>
     var results = new List<object>();
     try
     {
+        // Decode the URL before using it
+        string decodedUrl = Uri.UnescapeDataString(url);
+        Console.WriteLine($"[gproartist] Decoded URL: {decodedUrl}");
+
         using var client = new HttpClient();
         client.Timeout = TimeSpan.FromSeconds(30);
 
-        var html = await client.GetStringAsync(url);
+        var html = await client.GetStringAsync(decodedUrl);
+        Console.WriteLine($"[gproartist] HTML length: {html.Length}");
+
         var doc = new HtmlDocument();
         doc.LoadHtml(html);
 
@@ -181,6 +188,7 @@ app.MapGet("/gproartist", async (string url) =>
         // Cache for 2 hours
         gproCache[cacheKey] = (now.AddHours(2), results);
 
+        Console.WriteLine($"[gproartist] Found {results.Count} songs.");
         return Results.Json(results);
     }
     catch (Exception ex)
@@ -189,6 +197,7 @@ app.MapGet("/gproartist", async (string url) =>
         return Results.Json(new { error = ex.Message });
     }
 });
+
 
 
 
