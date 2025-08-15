@@ -133,50 +133,64 @@ app.MapGet("/gprosearch", async (string q, string type) =>
     }
 });
 
+// =========================================
+// GProTab artist songs endpoint
+// =========================================
 app.MapGet("/gproartist", async (string url) =>
 {
+    if (string.IsNullOrWhiteSpace(url))
+        return Results.BadRequest(new { error = "Missing url param" });
+
+    string cacheKey = $"artistSongs:{url}".ToLowerInvariant();
+    DateTime now = DateTime.UtcNow;
+
+    // Cache check
+    if (gproCache.TryGetValue(cacheKey, out var cached) && cached.expires > now)
+    {
+        Console.WriteLine($"[CACHE HIT] {cacheKey}");
+        return Results.Json(cached.results);
+    }
+
+    var results = new List<object>();
     try
     {
         using var client = new HttpClient();
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0");
+        client.Timeout = TimeSpan.FromSeconds(30);
 
-        // Decode the artist URL
-        var decodedUrl = Uri.UnescapeDataString(url);
-        Console.WriteLine($"[GProArtist] Decoded URL: {decodedUrl}");
-
-        // Fetch the artist page
-        var html = await client.GetStringAsync(decodedUrl);
-
+        var html = await client.GetStringAsync(url);
         var doc = new HtmlDocument();
         doc.LoadHtml(html);
 
-        var results = new List<object>();
-
-        // Song list links on the artist page
-        var songNodes = doc.DocumentNode.SelectNodes("//ol[contains(@class,'songs')]/li/a");
+        // Select song entries
+        var songNodes = doc.DocumentNode.SelectNodes("//div[@class='tabs-holder']//ul[@class='tabs']//a");
         if (songNodes != null)
         {
             foreach (var node in songNodes)
             {
-                string songTitle = node.InnerText.Trim();
-                string songLink = "https://gprotab.net" + node.GetAttributeValue("href", "");
-
+                var title = node.InnerText.Trim();
+                var link = node.GetAttributeValue("href", null);
                 results.Add(new
                 {
-                    title = songTitle,
-                    link = songLink,
-                    image = "" // No images for songs
+                    title,
+                    image = (string)null,
+                    link = link != null ? "https://gprotab.net" + link : null
                 });
             }
         }
+
+        // Cache for 2 hours
+        gproCache[cacheKey] = (now.AddHours(2), results);
 
         return Results.Json(results);
     }
     catch (Exception ex)
     {
-        return Results.Problem($"Error fetching artist songs: {ex.Message}");
+        Console.WriteLine($"[gproartist] Error: {ex.Message}");
+        return Results.Json(new { error = ex.Message });
     }
 });
+
+
 
 
 
