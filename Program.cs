@@ -134,14 +134,14 @@ app.MapGet("/gprosearch", async (string q, string type) =>
 });
 
 // =========================================
-// GProTab artist songs endpoint (fixed)
+// GProTab search endpoint (fixed)
 // =========================================
-app.MapGet("/gproartist", async (string url) =>
+app.MapGet("/gprosearch", async (string q, string type) =>
 {
-    if (string.IsNullOrWhiteSpace(url))
-        return Results.BadRequest(new { error = "Missing url param" });
+    if (string.IsNullOrWhiteSpace(q) || string.IsNullOrWhiteSpace(type))
+        return Results.BadRequest(new { error = "Missing query (q) or type parameter" });
 
-    string cacheKey = $"artistSongs:{url}".ToLowerInvariant();
+    string cacheKey = $"{type}:{q}".ToLowerInvariant();
     DateTime now = DateTime.UtcNow;
 
     // Cache check
@@ -151,75 +151,76 @@ app.MapGet("/gproartist", async (string url) =>
         return Results.Json(cached.results);
     }
 
+    string searchUrl = $"https://gprotab.net/en/search?type={type}&q={Uri.EscapeDataString(q)}";
     var results = new List<object>();
 
     try
     {
-        // Decode the URL before using it
-        string decodedUrl = Uri.UnescapeDataString(url);
-        Console.WriteLine($"[gproartist] Decoded URL: {decodedUrl}");
-
         using var client = new HttpClient();
-        client.Timeout = TimeSpan.FromSeconds(60); // increased timeout
+        client.Timeout = TimeSpan.FromSeconds(30);
         client.DefaultRequestHeaders.UserAgent.ParseAdd(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
             "AppleWebKit/537.36 (KHTML, like Gecko) " +
             "Chrome/114.0.0.0 Safari/537.36"
         );
 
-        string html;
-        try
-        {
-            html = await client.GetStringAsync(decodedUrl);
-        }
-        catch (TaskCanceledException)
-        {
-            Console.WriteLine("[gproartist] Request timed out.");
-            return Results.Json(new { error = "Request to artist page timed out" });
-        }
-        catch (HttpRequestException ex)
-        {
-            Console.WriteLine($"[gproartist] HTTP request failed: {ex.Message}");
-            return Results.Json(new { error = "Failed to fetch artist page", message = ex.Message });
-        }
-
-        Console.WriteLine($"[gproartist] HTML length: {html.Length}");
-
+        var html = await client.GetStringAsync(searchUrl);
         var doc = new HtmlDocument();
         doc.LoadHtml(html);
 
-        // Select song entries
-        var songNodes = doc.DocumentNode.SelectNodes("//div[@class='tabs-holder']//ul[@class='tabs']//a");
-        if (songNodes != null)
+        if (type.Equals("artist", StringComparison.OrdinalIgnoreCase))
         {
-            foreach (var node in songNodes)
+            var artistNodes = doc.DocumentNode.SelectNodes("//ol[@class='artists']/li");
+            if (artistNodes == null)
             {
-                var title = node.InnerText.Trim();
-                var link = node.GetAttributeValue("href", null);
-
-                results.Add(new
+                Console.WriteLine("[gprosearch] No artist nodes found — dumping HTML:");
+                Console.WriteLine(html.Substring(0, Math.Min(html.Length, 1000))); // preview
+            }
+            else
+            {
+                foreach (var node in artistNodes)
                 {
-                    title,
-                    image = (string)null,
-                    link = link != null ? "https://gprotab.net" + link : null
-                });
+                    var title = node.SelectSingleNode(".//a")?.InnerText.Trim();
+                    var img = node.SelectSingleNode(".//img")?.GetAttributeValue("src", null);
+                    var link = node.SelectSingleNode(".//a")?.GetAttributeValue("href", null);
+
+                    results.Add(new
+                    {
+                        title,
+                        image = !string.IsNullOrEmpty(img) ? "https://gprotab.net" + img : null,
+                        link = !string.IsNullOrEmpty(link) ? "https://gprotab.net" + link : null
+                    });
+                }
             }
         }
-        else
+        else if (type.Equals("song", StringComparison.OrdinalIgnoreCase))
         {
-            Console.WriteLine("[gproartist] No song nodes found.");
+            var songNodes = doc.DocumentNode.SelectNodes("//div[@class='tabs-holder']//ul[@class='tabs']//a");
+            if (songNodes != null)
+            {
+                foreach (var node in songNodes)
+                {
+                    var title = node.InnerText.Trim();
+                    var link = node.GetAttributeValue("href", null);
+                    results.Add(new
+                    {
+                        title,
+                        image = (string)null,
+                        link = !string.IsNullOrEmpty(link) ? "https://gprotab.net" + link : null
+                    });
+                }
+            }
         }
 
-        // Cache for 2 hours
-        gproCache[cacheKey] = (now.AddHours(2), results);
+        if (results.Count == 0)
+            return Results.Json(new { error = "No results found", query = q, type });
 
-        Console.WriteLine($"[gproartist] Found {results.Count} songs.");
+        gproCache[cacheKey] = (now.AddHours(2), results);
         return Results.Json(results);
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"[gproartist] Error: {ex.Message}");
-        return Results.Json(new { error = ex.Message });
+        return Results.Json(new { error = "Unexpected error", message = ex.Message });
     }
 });
 
