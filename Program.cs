@@ -137,38 +137,48 @@ app.MapGet("/gproartist", async (string url) =>
 {
     try
     {
+        // Decode the incoming URL from Unity
+        var decodedUrl = Uri.UnescapeDataString(url);
+        Console.WriteLine($"[GProArtist] Decoded URL: {decodedUrl}");
+
         using var client = new HttpClient();
         client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0");
 
-        // Fetch the artist page from gprotab.net
-        var html = await client.GetStringAsync(url);
+        // Fetch the artist page
+        var html = await client.GetStringAsync(decodedUrl);
 
         var doc = new HtmlDocument();
         doc.LoadHtml(html);
 
         var results = new List<object>();
 
-        // This selector targets song list links on an artist page
-        foreach (var node in doc.DocumentNode.SelectNodes("//ol[contains(@class,'songs')]/li/a"))
+        // Extract song list
+        var songNodes = doc.DocumentNode.SelectNodes("//ol[contains(@class,'songs')]/li/a");
+        if (songNodes != null)
         {
-            string songTitle = node.InnerText.Trim();
-            string songLink = "https://gprotab.net" + node.GetAttributeValue("href", "");
-
-            results.Add(new
+            foreach (var node in songNodes)
             {
-                title = songTitle,
-                link = songLink,
-                image = "" // No images for songs
-            });
+                string songTitle = node.InnerText.Trim();
+                string songLink = "https://gprotab.net" + node.GetAttributeValue("href", "");
+
+                results.Add(new
+                {
+                    title = songTitle,
+                    link = songLink,
+                    image = "" // No song images
+                });
+            }
         }
 
         return Results.Json(results);
     }
     catch (Exception ex)
     {
+        Console.WriteLine($"[GProArtist] Error: {ex.Message}");
         return Results.Problem($"Error fetching artist songs: {ex.Message}");
     }
 });
+
 
 
 // =========================================
