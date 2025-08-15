@@ -11,7 +11,7 @@ using System.Collections.Concurrent;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Allow big file uploads
+// Allow large file uploads
 builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 20 * 1024 * 1024);
 
 // CORS
@@ -19,7 +19,6 @@ var allowAll = "AllowAll";
 builder.Services.AddCors(o => o.AddPolicy(allowAll, p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
 
 var apiKey = builder.Configuration["API_KEY"];
-
 var app = builder.Build();
 app.UseCors(allowAll);
 
@@ -30,7 +29,7 @@ ConcurrentDictionary<string, (DateTime expires, List<object> results)> gproCache
 app.MapGet("/", () => Results.Json(new { ok = true, service = "AlphaTab GP parser", formats = "GP3–GP8" }));
 
 // =========================================
-// UPDATED: GProTab search endpoint
+// GProTab search endpoint
 // =========================================
 app.MapGet("/gprosearch", async (string q, string type) =>
 {
@@ -40,14 +39,16 @@ app.MapGet("/gprosearch", async (string q, string type) =>
     string cacheKey = $"{type}:{q}".ToLowerInvariant();
     DateTime now = DateTime.UtcNow;
 
-    // Check cache
+    // Cache check
     if (gproCache.TryGetValue(cacheKey, out var cached) && cached.expires > now)
     {
         Console.WriteLine($"[CACHE HIT] {cacheKey}");
         return Results.Json(cached.results);
     }
 
+    string searchUrl = $"https://gprotab.net/en/search?type={type}&q={Uri.EscapeDataString(q)}";
     var results = new List<object>();
+
     int maxRetries = 6;
     int delayMs = 1500;
 
@@ -59,21 +60,13 @@ app.MapGet("/gprosearch", async (string q, string type) =>
             {
                 using var client = new HttpClient();
                 client.Timeout = TimeSpan.FromSeconds(30);
-
-                // If the query is actually a direct artist page link, fetch that directly
-                string searchUrl;
-                if (q.StartsWith("https://gprotab.net", StringComparison.OrdinalIgnoreCase))
-                    searchUrl = q;
-                else
-                    searchUrl = $"https://gprotab.net/en/search?type={type}&q={Uri.EscapeDataString(q)}";
-
                 var html = await client.GetStringAsync(searchUrl);
+
                 var doc = new HtmlDocument();
                 doc.LoadHtml(html);
 
                 if (type.ToLower() == "artist")
                 {
-                    // Search results for artists
                     var artistNodes = doc.DocumentNode.SelectNodes("//ol[@class='artists']/li");
                     if (artistNodes != null)
                     {
@@ -94,7 +87,6 @@ app.MapGet("/gprosearch", async (string q, string type) =>
                 }
                 else if (type.ToLower() == "song")
                 {
-                    // Song list (artist page)
                     var songNodes = doc.DocumentNode.SelectNodes("//div[@class='tabs-holder']//ul[@class='tabs']//a");
                     if (songNodes != null)
                     {
@@ -102,11 +94,10 @@ app.MapGet("/gprosearch", async (string q, string type) =>
                         {
                             var title = node.InnerText.Trim();
                             var link = node.GetAttributeValue("href", null);
-
                             results.Add(new
                             {
                                 title,
-                                image = (string)null, // No image for songs
+                                image = (string)null,
                                 link = link != null ? "https://gprotab.net" + link : null
                             });
                         }
@@ -124,12 +115,7 @@ app.MapGet("/gprosearch", async (string q, string type) =>
                 Console.WriteLine($"[Retry {attempt}] Error: {ex.Message}");
                 if (attempt == maxRetries)
                 {
-                    return Results.Json(new
-                    {
-                        error = "Search failed after multiple attempts",
-                        query = q,
-                        type
-                    });
+                    return Results.Json(new { error = "Search failed after multiple attempts", query = q, type });
                 }
                 await Task.Delay(delayMs);
                 delayMs *= 2;
@@ -137,24 +123,13 @@ app.MapGet("/gprosearch", async (string q, string type) =>
         }
 
         if (results.Count == 0)
-        {
-            return Results.Json(new
-            {
-                error = "No results found",
-                query = q,
-                type
-            });
-        }
+            return Results.Json(new { error = "No results found", query = q, type });
 
         return Results.Json(results);
     }
     catch (Exception ex)
     {
-        return Results.Json(new
-        {
-            error = "Unexpected error",
-            message = ex.Message
-        });
+        return Results.Json(new { error = "Unexpected error", message = ex.Message });
     }
 });
 
@@ -221,114 +196,94 @@ app.MapPost("/parse", async (HttpRequest req) =>
         GuitarTabApi.Models.Helpers.CollectTempos(score),
         GuitarTabApi.Models.Helpers.CollectMarkers(score),
         GuitarTabApi.Models.Helpers.CollectRepeats(score),
-        score.Tracks.Select(track =>
-            new GuitarTabApi.Models.TrackJson(
-                track.Name ?? "",
-                GuitarTabApi.Models.Helpers.GetProp(track, "Program", 0),
-                GuitarTabApi.Models.Helpers.GetProp(track, "Channel", 0),
-                GuitarTabApi.Models.Helpers.GetProp(track, "IsPercussion", false),
-                GuitarTabApi.Models.Helpers.GetProp(track, "Capo", 0),
-                GuitarTabApi.Models.Helpers.GetProp(track, "Transpose", 0),
-                GuitarTabApi.Models.Helpers.GetProp(track, "Volume", 100),
-                GuitarTabApi.Models.Helpers.GetProp(track, "Pan", 0),
-                track.Staves.Select(staff =>
-                    new GuitarTabApi.Models.StaffJson(
-                        GuitarTabApi.Models.Helpers.Tunings(staff),
-                        GuitarTabApi.Models.Helpers.TuningText(staff),
-                        GuitarTabApi.Models.Helpers.TuningLetters(staff),
-                        staff.Bars.Select((bar, barIdx) =>
-                        {
-                            var section = bar.MasterBar.Section;
-                            var markerForBar = section != null
-                                ? new GuitarTabApi.Models.MarkerJson(section.Text ?? "", 0, barIdx)
-                                : null;
-
-                            return new GuitarTabApi.Models.BarJson(
-                                barIdx,
-                                bar.MasterBar.IsRepeatStart,
-                                bar.MasterBar.IsRepeatEnd,
-                                (int)bar.MasterBar.RepeatCount,
-                                GuitarTabApi.Models.Helpers.AlternateEndingsToArray(bar.MasterBar.AlternateEndings),
-                                (int)bar.BarLineRight,
-                                bar.Voices.Select(voice =>
-                                    new GuitarTabApi.Models.VoiceJson(
-                                        voice.Beats.Select(beat =>
-                                            new GuitarTabApi.Models.BeatJson(
-                                                (int)Math.Round(beat.DisplayStart),
-                                                (int)Math.Round(beat.DisplayDuration),
-                                                GuitarTabApi.Models.Helpers.GetProp(beat, "Duration", 0),
-                                                GuitarTabApi.Models.Helpers.GetProp(beat, "Dots", 0),
-                                                (GuitarTabApi.Models.Helpers.GetProp(beat, "TupletNumerator", 1),
-                                                 GuitarTabApi.Models.Helpers.GetProp(beat, "TupletDenominator", 1)),
-                                                beat.IsRest,
-                                                GuitarTabApi.Models.Helpers.GetProp(beat, "TremoloPicking", 0),
-                                                GuitarTabApi.Models.Helpers.GetProp(beat, "FadeIn", false),
-                                                GuitarTabApi.Models.Helpers.GetProp(beat, "Arpeggio", 0),
-                                                GuitarTabApi.Models.Helpers.GetProp(beat, "BrushDirection", 0),
-                                                GuitarTabApi.Models.Helpers.GetProp(beat, "WhammyBarPoints", "")?.ToString() ?? "",
-                                                beat.Notes.Select(n =>
-                                                    new GuitarTabApi.Models.NoteJson(
-                                                        (int)n.String,
-                                                        (staff.Tuning?.Count ?? 6) - (int)n.String + 1,
-                                                        (int)n.Fret,
-                                                        (int)Math.Round(n.RealValue),
-                                                        GuitarTabApi.Models.Helpers.GetProp(n, "IsTieOrigin", false),
-                                                        n.IsTieDestination,
-                                                        n.IsGhost,
-                                                        n.IsDead,
-                                                        n.IsHarmonic,
-                                                        (int)n.HarmonicType,
-                                                        n.HarmonicValue,
-                                                        n.IsPalmMute,
-                                                        n.IsLetRing,
-                                                        n.IsStaccato,
-                                                        n.IsHammerPullOrigin,
-                                                        n.IsHammerPullDestination,
-                                                        n.IsSlurOrigin,
-                                                        n.IsSlurDestination,
-                                                        (int)n.SlideInType,
-                                                        (int)n.SlideOutType,
-                                                        (int)n.BendType,
-                                                        n.BendPoints?.Select(bp => new GuitarTabApi.Models.BendPointJson(bp.Offset, bp.Value)).ToArray() ?? Array.Empty<GuitarTabApi.Models.BendPointJson>(),
-                                                        (int)n.Vibrato,
-                                                        n.IsTrill,
-                                                        n.TrillValue,
-                                                        (int)n.TrillSpeed,
-                                                        GuitarTabApi.Models.Helpers.GetProp(n, "IsTapped", false),
-                                                        GuitarTabApi.Models.Helpers.GetProp(n, "IsSlapped", false),
-                                                        GuitarTabApi.Models.Helpers.GetProp(n, "IsPopped", false),
-                                                        (int)n.LeftHandFinger,
-                                                        (int)n.RightHandFinger
-                                                    )
-                                                ).ToArray()
-                                            )
-                                        ).ToArray()
-                                    )
-                                ).ToArray(),
-                                null,
-                                markerForBar
-                            );
-                        }).ToArray()
-                    )
-                ).ToArray()
-            )
-        ).ToArray()
+        score.Tracks.Select(track => new GuitarTabApi.Models.TrackJson(
+            track.Name ?? "",
+            GuitarTabApi.Models.Helpers.GetProp(track, "Program", 0),
+            GuitarTabApi.Models.Helpers.GetProp(track, "Channel", 0),
+            GuitarTabApi.Models.Helpers.GetProp(track, "IsPercussion", false),
+            GuitarTabApi.Models.Helpers.GetProp(track, "Capo", 0),
+            GuitarTabApi.Models.Helpers.GetProp(track, "Transpose", 0),
+            GuitarTabApi.Models.Helpers.GetProp(track, "Volume", 100),
+            GuitarTabApi.Models.Helpers.GetProp(track, "Pan", 0),
+            track.Staves.Select(staff => new GuitarTabApi.Models.StaffJson(
+                GuitarTabApi.Models.Helpers.Tunings(staff),
+                GuitarTabApi.Models.Helpers.TuningText(staff),
+                GuitarTabApi.Models.Helpers.TuningLetters(staff),
+                staff.Bars.Select((bar, barIdx) =>
+                {
+                    var section = bar.MasterBar.Section;
+                    var markerForBar = section != null ? new GuitarTabApi.Models.MarkerJson(section.Text ?? "", 0, barIdx) : null;
+                    return new GuitarTabApi.Models.BarJson(
+                        barIdx,
+                        bar.MasterBar.IsRepeatStart,
+                        bar.MasterBar.IsRepeatEnd,
+                        (int)bar.MasterBar.RepeatCount,
+                        GuitarTabApi.Models.Helpers.AlternateEndingsToArray(bar.MasterBar.AlternateEndings),
+                        (int)bar.BarLineRight,
+                        bar.Voices.Select(voice => new GuitarTabApi.Models.VoiceJson(
+                            voice.Beats.Select(beat => new GuitarTabApi.Models.BeatJson(
+                                (int)Math.Round(beat.DisplayStart),
+                                (int)Math.Round(beat.DisplayDuration),
+                                GuitarTabApi.Models.Helpers.GetProp(beat, "Duration", 0),
+                                GuitarTabApi.Models.Helpers.GetProp(beat, "Dots", 0),
+                                (GuitarTabApi.Models.Helpers.GetProp(beat, "TupletNumerator", 1), GuitarTabApi.Models.Helpers.GetProp(beat, "TupletDenominator", 1)),
+                                beat.IsRest,
+                                GuitarTabApi.Models.Helpers.GetProp(beat, "TremoloPicking", 0),
+                                GuitarTabApi.Models.Helpers.GetProp(beat, "FadeIn", false),
+                                GuitarTabApi.Models.Helpers.GetProp(beat, "Arpeggio", 0),
+                                GuitarTabApi.Models.Helpers.GetProp(beat, "BrushDirection", 0),
+                                GuitarTabApi.Models.Helpers.GetProp(beat, "WhammyBarPoints", "")?.ToString() ?? "",
+                                beat.Notes.Select(n => new GuitarTabApi.Models.NoteJson(
+                                    (int)n.String,
+                                    (staff.Tuning?.Count ?? 6) - (int)n.String + 1,
+                                    (int)n.Fret,
+                                    (int)Math.Round(n.RealValue),
+                                    GuitarTabApi.Models.Helpers.GetProp(n, "IsTieOrigin", false),
+                                    n.IsTieDestination,
+                                    n.IsGhost,
+                                    n.IsDead,
+                                    n.IsHarmonic,
+                                    (int)n.HarmonicType,
+                                    n.HarmonicValue,
+                                    n.IsPalmMute,
+                                    n.IsLetRing,
+                                    n.IsStaccato,
+                                    n.IsHammerPullOrigin,
+                                    n.IsHammerPullDestination,
+                                    n.IsSlurOrigin,
+                                    n.IsSlurDestination,
+                                    (int)n.SlideInType,
+                                    (int)n.SlideOutType,
+                                    (int)n.BendType,
+                                    n.BendPoints?.Select(bp => new GuitarTabApi.Models.BendPointJson(bp.Offset, bp.Value)).ToArray() ?? Array.Empty<GuitarTabApi.Models.BendPointJson>(),
+                                    (int)n.Vibrato,
+                                    n.IsTrill,
+                                    n.TrillValue,
+                                    (int)n.TrillSpeed,
+                                    GuitarTabApi.Models.Helpers.GetProp(n, "IsTapped", false),
+                                    GuitarTabApi.Models.Helpers.GetProp(n, "IsSlapped", false),
+                                    GuitarTabApi.Models.Helpers.GetProp(n, "IsPopped", false),
+                                    (int)n.LeftHandFinger,
+                                    (int)n.RightHandFinger
+                                )).ToArray()
+                            )).ToArray()
+                        )).ToArray(),
+                        null,
+                        markerForBar
+                    );
+                }).ToArray()
+            )).ToArray()
+        )).ToArray()
     );
 
-    var jsonOpts = new JsonSerializerOptions
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = true
-    };
-
+    var jsonOpts = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
     return Results.Text(JsonSerializer.Serialize(scoreJson, jsonOpts), "application/json");
 });
 
 app.Run();
 
-
 // =============================================================
-// Models and Helpers
+// Models & Helpers
 // =============================================================
 namespace GuitarTabApi.Models
 {
@@ -352,10 +307,7 @@ namespace GuitarTabApi.Models
         {
             var result = new List<int>();
             for (int i = 0; i < 8; i++)
-            {
-                if (((int)alternateEndingsBitflag & (1 << i)) != 0)
-                    result.Add(i + 1);
-            }
+                if (((int)alternateEndingsBitflag & (1 << i)) != 0) result.Add(i + 1);
             return result.ToArray();
         }
 
@@ -366,8 +318,7 @@ namespace GuitarTabApi.Models
         {
             var val = GetProp(obj, name);
             if (val is T t) return t;
-            try { return (T)Convert.ChangeType(val, typeof(T)); }
-            catch { return defaultValue; }
+            try { return (T)Convert.ChangeType(val, typeof(T)); } catch { return defaultValue; }
         }
 
         public static int[] Tunings(Staff s) =>
@@ -376,8 +327,7 @@ namespace GuitarTabApi.Models
         public static string[] TuningText(Staff s) =>
             s.StringTuning?.Tunings?.Select(v => NoteNumberToString((int)Math.Round(v))).ToArray() ?? Array.Empty<string>();
 
-        public static string TuningLetters(Staff s) =>
-            string.Join(" ", TuningText(s));
+        public static string TuningLetters(Staff s) => string.Join(" ", TuningText(s));
 
         public static string NoteNumberToString(int midiNote)
         {
@@ -412,8 +362,7 @@ namespace GuitarTabApi.Models
             for (int i = 0; i < s.MasterBars.Count; i++)
             {
                 var section = s.MasterBars[i].Section;
-                if (section != null)
-                    list.Add(new MarkerJson(section.Text ?? "", 0, i));
+                if (section != null) list.Add(new MarkerJson(section.Text ?? "", 0, i));
             }
             return list.ToArray();
         }
