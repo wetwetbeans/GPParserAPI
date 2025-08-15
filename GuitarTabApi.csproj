@@ -8,5 +8,6 @@
   <ItemGroup>
     <!-- Use AlphaTab 1.6.x -->
     <PackageReference Include="AlphaTab" Version="1.6.0-beta.1" />
+    <PackageReference Include="HtmlAgilityPack" Version="1.12.2" />
   </ItemGroup>
 </Project>

@@ -5,6 +5,8 @@ using Microsoft.AspNetCore.Http.Features;
 using System.Text.Json;
 using System.Linq;
 using System.Reflection;
+using HtmlAgilityPack; // NEW for search scraping
+using System.Net.Http;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -23,6 +25,69 @@ app.UseCors(allowAll);
 // Health check
 app.MapGet("/", () => Results.Json(new { ok = true, service = "AlphaTab GP parser", formats = "GP3–GP8" }));
 
+// =========================================
+// NEW: GProTab search endpoint
+// =========================================
+app.MapGet("/gprosearch", async (string q, string type) =>
+{
+    if (string.IsNullOrWhiteSpace(q) || string.IsNullOrWhiteSpace(type))
+        return Results.BadRequest("Missing query (q) or type parameter");
+
+    string searchUrl = $"https://gprotab.net/en/search?type={type}&q={Uri.EscapeDataString(q)}";
+    using var client = new HttpClient();
+    var html = await client.GetStringAsync(searchUrl);
+
+    var doc = new HtmlDocument();
+    doc.LoadHtml(html);
+
+    var results = new List<object>();
+
+    if (type.ToLower() == "artist")
+    {
+        var artistNodes = doc.DocumentNode.SelectNodes("//ol[@class='artists']/li");
+        if (artistNodes != null)
+        {
+            foreach (var node in artistNodes)
+            {
+                var title = node.SelectSingleNode(".//a")?.InnerText.Trim();
+                var img = node.SelectSingleNode(".//img")?.GetAttributeValue("src", null);
+                var link = node.SelectSingleNode(".//a")?.GetAttributeValue("href", null);
+
+                results.Add(new
+                {
+                    title,
+                    image = img != null ? "https://gprotab.net" + img : null,
+                    link = link != null ? "https://gprotab.net" + link : null
+                });
+            }
+        }
+    }
+    else if (type.ToLower() == "song")
+    {
+        var songNodes = doc.DocumentNode.SelectNodes("//div[@class='tabs-holder']//ul[@class='tabs']//a");
+        if (songNodes != null)
+        {
+            foreach (var node in songNodes)
+            {
+                var title = node.InnerText.Trim();
+                var link = node.GetAttributeValue("href", null);
+
+                results.Add(new
+                {
+                    title,
+                    image = (string)null,
+                    link = link != null ? "https://gprotab.net" + link : null
+                });
+            }
+        }
+    }
+
+    return Results.Json(results);
+});
+
+// =========================================
+// Existing GP parse endpoint
+// =========================================
 app.MapPost("/parse", async (HttpRequest req) =>
 {
     if (!string.IsNullOrEmpty(apiKey))
@@ -60,8 +125,6 @@ app.MapPost("/parse", async (HttpRequest req) =>
         return Results.BadRequest("No tracks found.");
 
     int tpb = GuitarTabApi.Models.Helpers.GetProp(score, "TicksPerBeat", 480);
-
-    // Null-safe Notices
     string[] noticesArr = string.IsNullOrWhiteSpace(score.Notices ?? "") ? Array.Empty<string>() : new[] { score.Notices! };
 
     var scoreJson = new GuitarTabApi.Models.ScoreJson(
@@ -190,6 +253,10 @@ app.MapPost("/parse", async (HttpRequest req) =>
 
 app.Run();
 
+
+// =============================================================
+// Models and Helpers (unchanged from your existing code)
+// =============================================================
 namespace GuitarTabApi.Models
 {
     public record ScoreJson(string artist, string title, string album, string subtitle, string copyright, string musicBy, string wordsBy, string transcriber, string instructions, string[] notices, double tempo, int ticksPerBeat, int[] globalTuning, string[] globalTuningText, string globalTuningLetters, TimeSigJson[] timeSignatures, KeySigJson[] keySignatures, TempoChangeJson[] tempoChanges, MarkerJson[] markers, RepeatJson[] repeats, TrackJson[] tracks);
