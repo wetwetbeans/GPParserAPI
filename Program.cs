@@ -133,40 +133,75 @@ app.MapGet("/gprosearch", async (string q, string type) =>
     }
 });
 
+// In-memory cache for artist pages (reuse your existing gproCache if you want)
+ConcurrentDictionary<string, (DateTime expires, List<object> results)> gproArtistCache = new();
+
 app.MapGet("/gproartist", async (string url) =>
 {
     if (string.IsNullOrWhiteSpace(url))
         return Results.BadRequest(new { error = "Missing url param" });
 
+    string cacheKey = $"artistpage:{url}".ToLowerInvariant();
+    DateTime now = DateTime.UtcNow;
+
+    // Check cache first
+    if (gproArtistCache.TryGetValue(cacheKey, out var cached) && cached.expires > now)
+    {
+        Console.WriteLine($"[CACHE HIT] {cacheKey}");
+        return Results.Json(cached.results);
+    }
+
     var results = new List<object>();
+    int maxRetries = 5;
+    int delayMs = 2000; // Start at 2 seconds
 
     try
     {
-        using var client = new HttpClient();
-        client.Timeout = TimeSpan.FromSeconds(30);
-        var html = await client.GetStringAsync(url);
-
-        var doc = new HtmlDocument();
-        doc.LoadHtml(html);
-
-        // Example selector for song links on artist page
-        var songNodes = doc.DocumentNode.SelectNodes("//ul[contains(@class,'tabs')]/li/a");
-
-        if (songNodes != null)
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
         {
-            foreach (var node in songNodes)
+            try
             {
-                var title = node.InnerText.Trim();
-                var link = node.GetAttributeValue("href", null);
+                using var client = new HttpClient();
+                client.Timeout = TimeSpan.FromSeconds(30);
+                client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115 Safari/537.36");
 
-                results.Add(new
+                var html = await client.GetStringAsync(url);
+                var doc = new HtmlDocument();
+                doc.LoadHtml(html);
+
+                var songNodes = doc.DocumentNode.SelectNodes("//div[@class='tabs-holder']//ul[@class='tabs']//a");
+                if (songNodes != null)
                 {
-                    title,
-                    image = (string)null, // no image for songs
-                    link = link != null ? "https://gprotab.net" + link : null
-                });
+                    foreach (var node in songNodes)
+                    {
+                        var title = node.InnerText.Trim();
+                        var link = node.GetAttributeValue("href", null);
+                        results.Add(new
+                        {
+                            title,
+                            image = (string)null,
+                            link = link != null ? "https://gprotab.net" + link : null
+                        });
+                    }
+                }
+
+                if (results.Count > 0)
+                {
+                    gproArtistCache[cacheKey] = (now.AddHours(2), results);
+                    break;
+                }
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+            {
+                Console.WriteLine($"[429] Rate limited. Retry {attempt}/{maxRetries} after {delayMs}ms...");
+                await Task.Delay(delayMs);
+                delayMs *= 2; // exponential backoff
+                continue;
             }
         }
+
+        if (results.Count == 0)
+            return Results.Json(new { error = "No songs found for artist", url });
 
         return Results.Json(results);
     }
