@@ -133,6 +133,44 @@ app.MapGet("/gprosearch", async (string q, string type) =>
     }
 });
 
+app.MapGet("/gproartist", async (string url) =>
+{
+    try
+    {
+        using var client = new HttpClient();
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0");
+
+        // Fetch the artist page from gprotab.net
+        var html = await client.GetStringAsync(url);
+
+        var doc = new HtmlDocument();
+        doc.LoadHtml(html);
+
+        var results = new List<object>();
+
+        // This selector targets song list links on an artist page
+        foreach (var node in doc.DocumentNode.SelectNodes("//ol[contains(@class,'songs')]/li/a"))
+        {
+            string songTitle = node.InnerText.Trim();
+            string songLink = "https://gprotab.net" + node.GetAttributeValue("href", "");
+
+            results.Add(new
+            {
+                title = songTitle,
+                link = songLink,
+                image = "" // No images for songs
+            });
+        }
+
+        return Results.Json(results);
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem($"Error fetching artist songs: {ex.Message}");
+    }
+});
+
+
 // =========================================
 // GP parse endpoint
 // =========================================
