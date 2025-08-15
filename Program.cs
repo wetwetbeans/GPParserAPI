@@ -26,63 +26,110 @@ app.UseCors(allowAll);
 app.MapGet("/", () => Results.Json(new { ok = true, service = "AlphaTab GP parser", formats = "GP3–GP8" }));
 
 // =========================================
-// NEW: GProTab search endpoint
+// UPDATED: GProTab search endpoint (with retries & error handling)
 // =========================================
 app.MapGet("/gprosearch", async (string q, string type) =>
 {
     if (string.IsNullOrWhiteSpace(q) || string.IsNullOrWhiteSpace(type))
-        return Results.BadRequest("Missing query (q) or type parameter");
+        return Results.BadRequest(new { error = "Missing query (q) or type parameter" });
 
     string searchUrl = $"https://gprotab.net/en/search?type={type}&q={Uri.EscapeDataString(q)}";
-    using var client = new HttpClient();
-    var html = await client.GetStringAsync(searchUrl);
-
-    var doc = new HtmlDocument();
-    doc.LoadHtml(html);
-
     var results = new List<object>();
+    int maxRetries = 3;
+    int delayMs = 1000; // wait 1 second between retries
 
-    if (type.ToLower() == "artist")
+    try
     {
-        var artistNodes = doc.DocumentNode.SelectNodes("//ol[@class='artists']/li");
-        if (artistNodes != null)
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
         {
-            foreach (var node in artistNodes)
+            try
             {
-                var title = node.SelectSingleNode(".//a")?.InnerText.Trim();
-                var img = node.SelectSingleNode(".//img")?.GetAttributeValue("src", null);
-                var link = node.SelectSingleNode(".//a")?.GetAttributeValue("href", null);
+                using var client = new HttpClient();
+                client.Timeout = TimeSpan.FromSeconds(10);
 
-                results.Add(new
+                var html = await client.GetStringAsync(searchUrl);
+
+                var doc = new HtmlDocument();
+                doc.LoadHtml(html);
+
+                if (type.ToLower() == "artist")
                 {
-                    title,
-                    image = img != null ? "https://gprotab.net" + img : null,
-                    link = link != null ? "https://gprotab.net" + link : null
-                });
+                    var artistNodes = doc.DocumentNode.SelectNodes("//ol[@class='artists']/li");
+                    if (artistNodes != null)
+                    {
+                        foreach (var node in artistNodes)
+                        {
+                            var title = node.SelectSingleNode(".//a")?.InnerText.Trim();
+                            var img = node.SelectSingleNode(".//img")?.GetAttributeValue("src", null);
+                            var link = node.SelectSingleNode(".//a")?.GetAttributeValue("href", null);
+
+                            results.Add(new
+                            {
+                                title,
+                                image = img != null ? "https://gprotab.net" + img : null,
+                                link = link != null ? "https://gprotab.net" + link : null
+                            });
+                        }
+                    }
+                }
+                else if (type.ToLower() == "song")
+                {
+                    var songNodes = doc.DocumentNode.SelectNodes("//div[@class='tabs-holder']//ul[@class='tabs']//a");
+                    if (songNodes != null)
+                    {
+                        foreach (var node in songNodes)
+                        {
+                            var title = node.InnerText.Trim();
+                            var link = node.GetAttributeValue("href", null);
+
+                            results.Add(new
+                            {
+                                title,
+                                image = (string)null,
+                                link = link != null ? "https://gprotab.net" + link : null
+                            });
+                        }
+                    }
+                }
+
+                // If we got results, stop retrying
+                if (results.Count > 0)
+                    break;
+            }
+            catch (Exception ex)
+            {
+                if (attempt == maxRetries)
+                {
+                    return Results.Problem(
+                        title: "Search Failed",
+                        detail: $"Error after {maxRetries} attempts: {ex.Message}",
+                        statusCode: 500
+                    );
+                }
+                await Task.Delay(delayMs); // wait before retry
             }
         }
-    }
-    else if (type.ToLower() == "song")
-    {
-        var songNodes = doc.DocumentNode.SelectNodes("//div[@class='tabs-holder']//ul[@class='tabs']//a");
-        if (songNodes != null)
+
+        if (results.Count == 0)
         {
-            foreach (var node in songNodes)
+            return Results.NotFound(new
             {
-                var title = node.InnerText.Trim();
-                var link = node.GetAttributeValue("href", null);
-
-                results.Add(new
-                {
-                    title,
-                    image = (string)null,
-                    link = link != null ? "https://gprotab.net" + link : null
-                });
-            }
+                error = "No results found",
+                query = q,
+                type
+            });
         }
-    }
 
-    return Results.Json(results);
+        return Results.Json(results);
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(
+            title: "Unexpected Error",
+            detail: ex.Message,
+            statusCode: 500
+        );
+    }
 });
 
 // =========================================
@@ -253,9 +300,8 @@ app.MapPost("/parse", async (HttpRequest req) =>
 
 app.Run();
 
-
 // =============================================================
-// Models and Helpers (unchanged from your existing code)
+// Models and Helpers (unchanged)
 // =============================================================
 namespace GuitarTabApi.Models
 {
