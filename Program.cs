@@ -137,12 +137,12 @@ app.MapGet("/gproartist", async (string url) =>
 {
     try
     {
-        // Decode the incoming URL from Unity
-        var decodedUrl = Uri.UnescapeDataString(url);
-        Console.WriteLine($"[GProArtist] Decoded URL: {decodedUrl}");
-
         using var client = new HttpClient();
         client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0");
+
+        // Decode the artist URL
+        var decodedUrl = Uri.UnescapeDataString(url);
+        Console.WriteLine($"[GProArtist] Decoded URL: {decodedUrl}");
 
         // Fetch the artist page
         var html = await client.GetStringAsync(decodedUrl);
@@ -152,7 +152,7 @@ app.MapGet("/gproartist", async (string url) =>
 
         var results = new List<object>();
 
-        // Extract song list
+        // Song list links on the artist page
         var songNodes = doc.DocumentNode.SelectNodes("//ol[contains(@class,'songs')]/li/a");
         if (songNodes != null)
         {
@@ -165,7 +165,7 @@ app.MapGet("/gproartist", async (string url) =>
                 {
                     title = songTitle,
                     link = songLink,
-                    image = "" // No song images
+                    image = "" // No images for songs
                 });
             }
         }
@@ -174,10 +174,10 @@ app.MapGet("/gproartist", async (string url) =>
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"[GProArtist] Error: {ex.Message}");
         return Results.Problem($"Error fetching artist songs: {ex.Message}");
     }
 });
+
 
 
 
