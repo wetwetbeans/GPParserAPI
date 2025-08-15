@@ -5,8 +5,9 @@ using Microsoft.AspNetCore.Http.Features;
 using System.Text.Json;
 using System.Linq;
 using System.Reflection;
-using HtmlAgilityPack; // NEW for search scraping
+using HtmlAgilityPack;
 using System.Net.Http;
+using System.Collections.Concurrent;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -22,21 +23,35 @@ var apiKey = builder.Configuration["API_KEY"];
 var app = builder.Build();
 app.UseCors(allowAll);
 
+// In-memory cache for search results
+ConcurrentDictionary<string, (DateTime expires, List<object> results)> gproCache = new();
+
 // Health check
 app.MapGet("/", () => Results.Json(new { ok = true, service = "AlphaTab GP parser", formats = "GP3–GP8" }));
 
 // =========================================
-// UPDATED: GProTab search endpoint (with retries & error handling)
+// UPDATED: GProTab search endpoint
 // =========================================
 app.MapGet("/gprosearch", async (string q, string type) =>
 {
     if (string.IsNullOrWhiteSpace(q) || string.IsNullOrWhiteSpace(type))
         return Results.BadRequest(new { error = "Missing query (q) or type parameter" });
 
+    string cacheKey = $"{type}:{q}".ToLowerInvariant();
+    DateTime now = DateTime.UtcNow;
+
+    // Check cache
+    if (gproCache.TryGetValue(cacheKey, out var cached) && cached.expires > now)
+    {
+        Console.WriteLine($"[CACHE HIT] {cacheKey}");
+        return Results.Json(cached.results);
+    }
+
     string searchUrl = $"https://gprotab.net/en/search?type={type}&q={Uri.EscapeDataString(q)}";
     var results = new List<object>();
-    int maxRetries = 3;
-    int delayMs = 1000; // wait 1 second between retries
+
+    int maxRetries = 6;
+    int delayMs = 1500;
 
     try
     {
@@ -45,10 +60,9 @@ app.MapGet("/gprosearch", async (string q, string type) =>
             try
             {
                 using var client = new HttpClient();
-                client.Timeout = TimeSpan.FromSeconds(10);
+                client.Timeout = TimeSpan.FromSeconds(30);
 
                 var html = await client.GetStringAsync(searchUrl);
-
                 var doc = new HtmlDocument();
                 doc.LoadHtml(html);
 
@@ -92,27 +106,32 @@ app.MapGet("/gprosearch", async (string q, string type) =>
                     }
                 }
 
-                // If we got results, stop retrying
                 if (results.Count > 0)
+                {
+                    gproCache[cacheKey] = (now.AddHours(2), results);
                     break;
+                }
             }
             catch (Exception ex)
             {
+                Console.WriteLine($"[Retry {attempt}] Error: {ex.Message}");
                 if (attempt == maxRetries)
                 {
-                    return Results.Problem(
-                        title: "Search Failed",
-                        detail: $"Error after {maxRetries} attempts: {ex.Message}",
-                        statusCode: 500
-                    );
+                    return Results.Json(new
+                    {
+                        error = "Search failed after multiple attempts",
+                        query = q,
+                        type
+                    });
                 }
-                await Task.Delay(delayMs); // wait before retry
+                await Task.Delay(delayMs);
+                delayMs *= 2;
             }
         }
 
         if (results.Count == 0)
         {
-            return Results.NotFound(new
+            return Results.Json(new
             {
                 error = "No results found",
                 query = q,
@@ -124,16 +143,16 @@ app.MapGet("/gprosearch", async (string q, string type) =>
     }
     catch (Exception ex)
     {
-        return Results.Problem(
-            title: "Unexpected Error",
-            detail: ex.Message,
-            statusCode: 500
-        );
+        return Results.Json(new
+        {
+            error = "Unexpected error",
+            message = ex.Message
+        });
     }
 });
 
 // =========================================
-// Existing GP parse endpoint
+// GP parse endpoint
 // =========================================
 app.MapPost("/parse", async (HttpRequest req) =>
 {
@@ -301,7 +320,7 @@ app.MapPost("/parse", async (HttpRequest req) =>
 app.Run();
 
 // =============================================================
-// Models and Helpers (unchanged)
+// Models and Helpers
 // =============================================================
 namespace GuitarTabApi.Models
 {
