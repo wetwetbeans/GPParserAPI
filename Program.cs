@@ -134,8 +134,7 @@ app.MapGet("/gprosearch", async (string q, string type) =>
 });
 
 // =========================================
-// =========================================
-// GProTab artist songs endpoint
+// GProTab artist songs endpoint (fixed)
 // =========================================
 app.MapGet("/gproartist", async (string url) =>
 {
@@ -153,6 +152,7 @@ app.MapGet("/gproartist", async (string url) =>
     }
 
     var results = new List<object>();
+
     try
     {
         // Decode the URL before using it
@@ -160,9 +160,29 @@ app.MapGet("/gproartist", async (string url) =>
         Console.WriteLine($"[gproartist] Decoded URL: {decodedUrl}");
 
         using var client = new HttpClient();
-        client.Timeout = TimeSpan.FromSeconds(30);
+        client.Timeout = TimeSpan.FromSeconds(60); // increased timeout
+        client.DefaultRequestHeaders.UserAgent.ParseAdd(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) " +
+            "Chrome/114.0.0.0 Safari/537.36"
+        );
 
-        var html = await client.GetStringAsync(decodedUrl);
+        string html;
+        try
+        {
+            html = await client.GetStringAsync(decodedUrl);
+        }
+        catch (TaskCanceledException)
+        {
+            Console.WriteLine("[gproartist] Request timed out.");
+            return Results.Json(new { error = "Request to artist page timed out" });
+        }
+        catch (HttpRequestException ex)
+        {
+            Console.WriteLine($"[gproartist] HTTP request failed: {ex.Message}");
+            return Results.Json(new { error = "Failed to fetch artist page", message = ex.Message });
+        }
+
         Console.WriteLine($"[gproartist] HTML length: {html.Length}");
 
         var doc = new HtmlDocument();
@@ -176,6 +196,7 @@ app.MapGet("/gproartist", async (string url) =>
             {
                 var title = node.InnerText.Trim();
                 var link = node.GetAttributeValue("href", null);
+
                 results.Add(new
                 {
                     title,
@@ -183,6 +204,10 @@ app.MapGet("/gproartist", async (string url) =>
                     link = link != null ? "https://gprotab.net" + link : null
                 });
             }
+        }
+        else
+        {
+            Console.WriteLine("[gproartist] No song nodes found.");
         }
 
         // Cache for 2 hours
