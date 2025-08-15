@@ -47,9 +47,7 @@ app.MapGet("/gprosearch", async (string q, string type) =>
         return Results.Json(cached.results);
     }
 
-    string searchUrl = $"https://gprotab.net/en/search?type={type}&q={Uri.EscapeDataString(q)}";
     var results = new List<object>();
-
     int maxRetries = 6;
     int delayMs = 1500;
 
@@ -62,12 +60,20 @@ app.MapGet("/gprosearch", async (string q, string type) =>
                 using var client = new HttpClient();
                 client.Timeout = TimeSpan.FromSeconds(30);
 
+                // If the query is actually a direct artist page link, fetch that directly
+                string searchUrl;
+                if (q.StartsWith("https://gprotab.net", StringComparison.OrdinalIgnoreCase))
+                    searchUrl = q;
+                else
+                    searchUrl = $"https://gprotab.net/en/search?type={type}&q={Uri.EscapeDataString(q)}";
+
                 var html = await client.GetStringAsync(searchUrl);
                 var doc = new HtmlDocument();
                 doc.LoadHtml(html);
 
                 if (type.ToLower() == "artist")
                 {
+                    // Search results for artists
                     var artistNodes = doc.DocumentNode.SelectNodes("//ol[@class='artists']/li");
                     if (artistNodes != null)
                     {
@@ -88,6 +94,7 @@ app.MapGet("/gprosearch", async (string q, string type) =>
                 }
                 else if (type.ToLower() == "song")
                 {
+                    // Song list (artist page)
                     var songNodes = doc.DocumentNode.SelectNodes("//div[@class='tabs-holder']//ul[@class='tabs']//a");
                     if (songNodes != null)
                     {
@@ -99,7 +106,7 @@ app.MapGet("/gprosearch", async (string q, string type) =>
                             results.Add(new
                             {
                                 title,
-                                image = (string)null,
+                                image = (string)null, // No image for songs
                                 link = link != null ? "https://gprotab.net" + link : null
                             });
                         }
@@ -318,6 +325,7 @@ app.MapPost("/parse", async (HttpRequest req) =>
 });
 
 app.Run();
+
 
 // =============================================================
 // Models and Helpers
