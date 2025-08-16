@@ -1,137 +1,159 @@
-﻿using AlphaTab.Model;
-using System.Reflection;
-using System.Text.Json;
+﻿using System.Collections.Generic;
 
-namespace GuitarTabApi.Models
+namespace GPParser.Models
 {
-    // ------------------- Records -------------------
-    public record ScoreJson(
-        string Artist,
-        string Title,
-        string Album,
-        string Subtitle,
-        string Copyright,
-        string MusicBy,
-        string WordsBy,
-        string Transcriber,
-        string Instructions,
-        string[] Notices,
-        double Tempo,
-        int TicksPerBeat,
-        int[] GlobalTuning,
-        string[] GlobalTuningText,
-        string GlobalTuningLetters,
-        TimeSigJson[] TimeSignatures,
-        KeySigJson[] KeySignatures,
-        TempoChangeJson[] TempoChanges,
-        MarkerJson[] Markers,
-        RepeatJson[] Repeats,
-        TrackJson[] Tracks);
-
-    public record TrackJson(string Name, int Program, int Channel, bool IsPercussion,
-        int Capo, int Transpose, int Volume, int Pan, StaffJson[] Staves);
-
-    public record StaffJson(int[] Tuning, string[] TuningText, string TuningLetters, BarJson[] Bars);
-
-    public record BarJson(int Index, bool RepeatOpen, bool RepeatClose, int RepeatCount,
-        int[] Voltas, int BarlineType, VoiceJson[] Voices,
-        TimeSigJson? TimeSigOverride, MarkerJson? Marker);
-
-    public record VoiceJson(BeatJson[] Beats);
-
-    public record BeatJson(int Start, int Duration, int DurationSymbol, int Dots,
-        (int Num, int Den) Tuplet, bool IsRest, int TremoloPicking, bool FadeIn,
-        int Arpeggio, int BrushDirection, string WhammyBarPoints, NoteJson[] Notes);
-
-    public record NoteJson(int StringLow, int StringHigh, int Fret, int PitchMidi,
-        bool IsTieOrigin, bool IsTieDestination, bool IsGhost, bool IsDead,
-        bool IsHarmonic, int HarmonicType, double HarmonicValue, bool IsPalmMute,
-        bool IsLetRing, bool IsStaccato, bool IsHammerPullOrigin,
-        bool IsHammerPullDestination, bool IsSlurOrigin, bool IsSlurDestination,
-        int SlideInType, int SlideOutType, int BendType, BendPointJson[] BendPoints,
-        int VibratoType, bool IsTrill, double TrillValue, int TrillSpeed,
-        bool IsTapped, bool IsSlapped, bool IsPopped,
-        int FingeringLeft, int FingeringRight);
-
-    public record BendPointJson(double Offset, double Value);
-    public record TimeSigJson(int Numerator, int Denominator, int BarIndex);
-    public record KeySigJson(int Key, int Type, int BarIndex);
-    public record TempoChangeJson(double Bpm, int BarIndex);
-    public record MarkerJson(string Text, int ColorArgb, int BarIndex);
-    public record RepeatJson(bool Open, bool Close, int Count, int BarIndex);
-
-    // ------------------- Builder -------------------
-    public static class ModelsBuilder
+    public class ExportScore
     {
-        public static ScoreJson BuildScoreJson(Score score)
-        {
-            int tpb = Helpers.GetProp(score, "TicksPerBeat", 480);
-            string[] noticesArr = string.IsNullOrWhiteSpace(score.Notices ?? "")
-                ? Array.Empty<string>() : new[] { score.Notices! };
-
-            return new ScoreJson(
-                score.Artist ?? "(Unknown Artist)",
-                score.Title ?? "(Untitled)",
-                score.Album ?? "",
-                score.SubTitle ?? "",
-                score.Copyright ?? "",
-                score.Music ?? "",
-                score.Words ?? "",
-                score.Tab ?? "",
-                score.Instructions ?? "",
-                noticesArr,
-                score.Tempo > 0 ? score.Tempo : 120.0,
-                tpb,
-                Array.Empty<int>(),
-                Array.Empty<string>(),
-                "",
-                Array.Empty<TimeSigJson>(),
-                Array.Empty<KeySigJson>(),
-                Array.Empty<TempoChangeJson>(),
-                Array.Empty<MarkerJson>(),
-                Array.Empty<RepeatJson>(),
-                Array.Empty<TrackJson>() // simplified for now
-            );
-        }
+        public string Album { get; set; } = "";
+        public string Artist { get; set; } = "";
+        public string Copyright { get; set; } = "";
+        public string Title { get; set; } = "";
+        public string Words { get; set; } = "";
+        public double Tempo { get; set; } = 120.0;
+        public List<ExportTrack> Tracks { get; set; } = new();
     }
 
-    // ------------------- Helpers -------------------
-    public static class Helpers
+    public sealed class ExportMasterBar
     {
-        public static T GetProp<T>(object obj, string prop, T def)
-        {
-            var pi = obj.GetType().GetProperty(prop,
-                BindingFlags.Public | BindingFlags.Instance);
-            if (pi != null && pi.PropertyType == typeof(T))
-            {
-                return (T)(pi.GetValue(obj) ?? def);
-            }
-            return def;
-        }
+        public double Index { get; set; }
+        public double Start { get; set; }
+        public double Duration { get; set; }
+        public int TimeSignatureNumerator { get; set; } = 4;
+        public int TimeSignatureDenominator { get; set; } = 4;
+        public bool IsFreeTime { get; set; }
+        public bool IsDoubleBar { get; set; }
+        public bool IsRepeatStart { get; set; }
+        public bool IsRepeatEnd { get; set; }
+        public int RepeatCount { get; set; }
+        public bool IsAnacrusis { get; set; }
+        public double? TempoBpm { get; set; }
+        public string? SectionName { get; set; }
+        public List<ExportVoice> Voices { get; set; } = new();
     }
 
-    // ------------------- snake_case -------------------
-    public class SnakeCaseNamingPolicy : JsonNamingPolicy
+    public sealed class ExportTrack
     {
-        public override string ConvertName(string name)
-        {
-            if (string.IsNullOrEmpty(name)) return name;
+        public double Index { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public string ShortName { get; set; } = string.Empty;
+        public ExportPlaybackInfo PlaybackInfo { get; set; } = new();
+        public List<ExportStaff> Staves { get; set; } = new();
+    }
 
-            var chars = new List<char>(name.Length * 2);
-            for (int i = 0; i < name.Length; i++)
-            {
-                char c = name[i];
-                if (char.IsUpper(c))
-                {
-                    if (i > 0) chars.Add('_');
-                    chars.Add(char.ToLower(c));
-                }
-                else
-                {
-                    chars.Add(c);
-                }
-            }
-            return new string(chars.ToArray());
-        }
+    public sealed class ExportPlaybackInfo
+    {
+        public double Program { get; set; }
+        public double Volume { get; set; }
+    }
+
+    public class ExportStaff
+    {
+        public double Index { get; set; }
+        public List<double> Tuning { get; set; } = new();
+        public string TuningName { get; set; } = string.Empty;
+        public double Capo { get; set; }
+        public double TranspositionPitch { get; set; }
+        public bool IsPercussion { get; set; }
+        public List<ExportBar> Bars { get; set; } = new();
+    }
+
+    public class ExportBar
+    {
+        public double Index { get; set; }
+        public List<ExportVoice> Voices { get; set; } = new();
+    }
+
+    public class ExportVoice
+    {
+        public double Index { get; set; }
+        public List<ExportBeat> Beats { get; set; } = new();
+    }
+    public class ExportBeat
+    {
+        private static double _globalBeatId;
+
+        // --- Identity ---
+        public double Id { get; set; } = _globalBeatId++;
+        public double Index { get; set; }
+
+        // --- Timing ---
+        public double DisplayStart { get; set; }
+        public double DisplayDuration { get; set; }
+        public double PlaybackStart { get; set; }
+        public double PlaybackDuration { get; set; }
+
+        // --- Beat Type ---
+        public string Duration { get; set; } = "Quarter";
+        public bool IsRest { get; set; }
+        public double Dots { get; set; }
+        public bool IsEmpty { get; set; }
+        public bool IsSlashed { get; set; }
+
+        // --- Tuplet ---
+        public double TupletNumerator { get; set; } = -1;
+        public double TupletDenominator { get; set; } = -1;
+        public bool HasTuplet { get; set; }
+
+        // --- Grace ---
+        public string GraceType { get; set; } = "None";
+        public double GraceIndex { get; set; } = -1;
+        public bool IsGrace => GraceType != "None" && GraceIndex >= 0;
+
+        // --- Text / Lyrics ---
+        public string? Text { get; set; }
+        public List<string>? Lyrics { get; set; }
+
+        // --- Legato ---
+        public bool IsLegatoOrigin { get; set; }
+        public bool IsLegatoDestination { get; set; }
+
+        // --- Styles ---
+        public bool IsLetRing { get; set; }
+        public bool IsPalmMute { get; set; }
+        public bool DeadSlapped { get; set; }
+        public bool Slapped { get; set; }
+        public bool Popped { get; set; }
+        public bool Tapped { get; set; }
+        public bool FadeIn { get; set; }
+
+        // --- Techniques ---
+        public string Vibrato { get; set; } = "None";
+        public bool HasSlide { get; set; }
+        public bool HasBend { get; set; }
+
+        // --- Dynamics ---
+        public string Dynamics { get; set; } = "F"; // forte default
+
+        // --- Chords ---
+        public string? ChordId { get; set; }
+        public bool HasChord { get; set; }
+
+        // --- Notes ---
+        public List<ExportNote> Notes { get; set; } = new();
+    }
+
+
+    public class ExportNote
+    {
+        public double String { get; set; }
+        public double Fret { get; set; }
+        public bool IsTieOrigin { get; set; }
+        public bool IsTieDestination { get; set; }
+        public bool IsHammerPullOrigin { get; set; }
+        public bool IsHammerPullDestination { get; set; }
+        public bool IsSlurOrigin { get; set; }
+        public bool IsSlurDestination { get; set; }
+        public bool IsGhost { get; set; }
+        public bool IsDead { get; set; }
+        public bool IsPalmMute { get; set; }
+        public bool IsLetRing { get; set; }
+        public bool IsStaccato { get; set; }
+        public string SlideInType { get; set; } = "None";
+        public string SlideOutType { get; set; } = "None";
+        public string Vibrato { get; set; } = "None";
+        public string HarmonicType { get; set; } = "None";
+        public double HarmonicValue { get; set; }
+        public string BendType { get; set; } = "None";
+        public List<(double Offset, double Value)> BendPoints { get; set; } = new();
     }
 }

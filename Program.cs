@@ -1,122 +1,136 @@
-﻿using AlphaTab;
-using AlphaTab.Importer;
+﻿using System.Text.Json;
+using AlphaTab.Io;
 using AlphaTab.Model;
-using Microsoft.AspNetCore.Http.Features;
-using Microsoft.AspNetCore.Http.Json;
-using System.Text.Json;
-using HtmlAgilityPack;
-using System.Net.Http;
-using System.Collections.Concurrent;
-
-// Models + helpers live in Models.cs in same folder
-using GuitarTabApi.Models;
+using AlphaTab.Importer;
+using AlphaTab.Core.EcmaScript;
+using GPParser.Models;
 
 var builder = WebApplication.CreateBuilder(args);
-
-// Allow large file uploads
-builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 20 * 1024 * 1024);
-
-// CORS
-var allowAll = "AllowAll";
-builder.Services.AddCors(o => o.AddPolicy(allowAll,
-    p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
-
-// JSON: force snake_case globally
-builder.Services.Configure<Microsoft.AspNetCore.Mvc.JsonOptions>(options =>
-{
-    options.JsonSerializerOptions.PropertyNamingPolicy = new SnakeCaseNamingPolicy();
-    options.JsonSerializerOptions.DictionaryKeyPolicy = new SnakeCaseNamingPolicy();
-});
-
-var apiKey = builder.Configuration["API_KEY"];
 var app = builder.Build();
-app.UseCors(allowAll);
 
-// =====================================
-// Health check
-// =====================================
-app.MapGet("/", () => Results.Json(new
+const string API_KEY = "13";
+
+// API key check
+app.Use(async (context, next) =>
 {
-    ok = true,
-    service = "AlphaTab GP parser",
-    formats = "GP3–GP8"
-}));
-
-// =====================================
-// Example GProTab search endpoint
-// (trimmed for brevity, keep yours here)
-// =====================================
-ConcurrentDictionary<string, (DateTime expires, List<object> results)> gproCache = new();
-
-app.MapGet("/gprosearch", async (string q, string type) =>
-{
-    if (string.IsNullOrWhiteSpace(q) || string.IsNullOrWhiteSpace(type))
-        return Results.BadRequest(new { error = "Missing query (q) or type parameter" });
-
-    string searchUrl = $"https://gprotab.net/en/search?type={type}&q={Uri.EscapeDataString(q)}";
-    var results = new List<object>();
-
-    using var client = new HttpClient();
-    var html = await client.GetStringAsync(searchUrl);
-
-    var doc = new HtmlDocument();
-    doc.LoadHtml(html);
-
-    var nodes = doc.DocumentNode.SelectNodes("//ol[@class='artists']/li");
-    if (nodes != null)
+    if (!context.Request.Headers.TryGetValue("x-api-key", out var key) || key != API_KEY)
     {
-        foreach (var node in nodes)
-        {
-            var title = node.SelectSingleNode(".//a")?.InnerText.Trim();
-            results.Add(new { title });
-        }
+        context.Response.StatusCode = 401;
+        await context.Response.WriteAsync("Unauthorized");
+        return;
     }
 
-    return Results.Json(results);
+    await next();
 });
 
-// =====================================
-// GP file parsing endpoint
-// =====================================
-app.MapPost("/parse", async (HttpRequest req) =>
+app.MapPost("/parse", async (HttpRequest request) =>
 {
-    if (!string.IsNullOrEmpty(apiKey))
+    if (!request.HasFormContentType)
     {
-        if (!req.Headers.TryGetValue("x-api-key", out var key) || key != apiKey)
-            return Results.Unauthorized();
+        return Results.BadRequest("Expected multipart/form-data with a file field");
     }
 
-    if (!req.HasFormContentType)
-        return Results.BadRequest("multipart/form-data required");
-
-    var form = await req.ReadFormAsync();
-    var file = form.Files.GetFile("file");
+    var form = await request.ReadFormAsync();
+    var file = form.Files["file"];
     if (file == null || file.Length == 0)
-        return Results.BadRequest("Upload .gp3/.gp4/.gp5/.gpx/.gp as 'file'");
-
-    byte[] data;
-    using (var ms = new MemoryStream())
     {
-        await file.CopyToAsync(ms);
-        data = ms.ToArray();
+        return Results.BadRequest("No file uploaded");
     }
 
     Score score;
-    try
+    using (var ms = new MemoryStream())
     {
-        score = ScoreLoader.LoadScoreFromBytes(data, new Settings());
+        await file.CopyToAsync(ms);
+        var bytes = ms.ToArray();
+        var u8 = new Uint8Array(bytes);
+        score = ScoreLoader.LoadScoreFromBytes(u8);
     }
-    catch (Exception ex)
+
+    var export = new ExportScore
     {
-        return Results.BadRequest($"alphaTab failed to parse: {ex.Message}");
-    }
+        Title = score.Title ?? "",
+        Artist = score.Artist ?? "",
+        Album = score.Album ?? "",
+        Copyright = score.Copyright ?? "",
+        Words = score.Words ?? "",
+        Tempo = score.Tempo,
+        Tracks = score.Tracks.Select((t, ti) => new ExportTrack
+        {
+            Index = ti,
+            Name = t.Name ?? "",
+            ShortName = t.ShortName ?? "",
+            PlaybackInfo = new ExportPlaybackInfo
+            {
+                Program = t.PlaybackInfo?.Program ?? 0,
+                Volume = t.PlaybackInfo?.Volume ?? 100,
+            },
+            Staves = t.Staves.Select((s, si) => new ExportStaff
+            {
+                Index = si,
+                Tuning = s.Tuning?.Select(x => (double)x).ToList() ?? new(),
+                TuningName = s.TuningName ?? "",
+                Capo = s.Capo,
+                TranspositionPitch = s.TranspositionPitch,
+                IsPercussion = s.IsPercussion,
+                Bars = s.Bars.Select((b, bi) => new ExportBar
+                {
+                    Index = bi,
+                    Voices = b.Voices.Select((v, vi) => new ExportVoice
+                    {
+                        Index = vi,
+                        Beats = v.Beats.Select((be, bei) => new ExportBeat
+                        {
+                            Id = be.Id,
+                            Index = be.Index,
+                            DisplayStart = be.DisplayStart,
+                            DisplayDuration = be.DisplayDuration,
+                            PlaybackStart = be.PlaybackStart,
+                            PlaybackDuration = be.PlaybackDuration,
+                            Duration = be.Duration.ToString(),
+                            IsRest = be.IsRest,
+                            GraceType = be.GraceType.ToString(),
+                            GraceIndex = be.GraceIndex,
+                            IsLegatoOrigin = be.IsLegatoOrigin,
+                            IsLegatoDestination = be.IsLegatoDestination,
+                            IsLetRing = be.IsLetRing,
+                            IsPalmMute = be.IsPalmMute,
+                            DeadSlapped = be.DeadSlapped,
+                            Slapped = be.Slap,
+                            Popped = be.Pop,
+                            Tapped = be.Tap,
+                            Vibrato = be.Vibrato.ToString(),
+                            Notes = be.Notes.Select(n => new ExportNote
+                            {
+                                String = n.String,
+                                Fret = n.Fret,
+                                IsTieOrigin = n.IsTieOrigin,
+                                IsTieDestination = n.IsTieDestination,
+                                IsHammerPullOrigin = n.IsHammerPullOrigin,
+                                IsHammerPullDestination = n.IsHammerPullDestination,
+                                IsSlurOrigin = n.IsSlurOrigin,
+                                IsSlurDestination = n.IsSlurDestination,
+                                IsGhost = n.IsGhost,
+                                IsDead = n.IsDead,
+                                IsPalmMute = n.IsPalmMute,
+                                IsLetRing = n.IsLetRing,
+                                IsStaccato = n.IsStaccato,
+                                SlideInType = n.SlideInType.ToString(),
+                                SlideOutType = n.SlideOutType.ToString(),
+                                Vibrato = n.Vibrato.ToString(),
+                                HarmonicType = n.HarmonicType.ToString(),
+                                HarmonicValue = n.HarmonicValue,
+                                BendType = n.BendType.ToString(),
+                                BendPoints = n.BendPoints?.Select(bp => ((double)bp.Offset, (double)bp.Value)).ToList()
+                                    ?? new List<(double, double)>()
+                            }).ToList()
+                        }).ToList()
+                    }).ToList()
+                }).ToList()
+            }).ToList()
+        }).ToList()
+    };
 
-    if (score.Tracks == null || score.Tracks.Count == 0)
-        return Results.BadRequest("No tracks found.");
-
-    var scoreJson = ModelsBuilder.BuildScoreJson(score);
-
-    return Results.Json(scoreJson);
+    return Results.Json(export, new JsonSerializerOptions { WriteIndented = true });
 });
 
 app.Run();
