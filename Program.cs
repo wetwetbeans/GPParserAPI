@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+﻿using System.IO;
+using System.Text.Json;
 using AlphaTab.Io;
 using AlphaTab.Model;
 using AlphaTab.Importer;
@@ -8,9 +9,8 @@ using GPParser.Models;
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
 
-const string API_KEY = "13";
+const string API_KEY = "13"; // simple API key check
 
-// API key check
 app.Use(async (context, next) =>
 {
     if (!context.Request.Headers.TryGetValue("x-api-key", out var key) || key != API_KEY)
@@ -19,7 +19,6 @@ app.Use(async (context, next) =>
         await context.Response.WriteAsync("Unauthorized");
         return;
     }
-
     await next();
 });
 
@@ -54,8 +53,7 @@ app.MapPost("/parse", async (HttpRequest request) =>
         Copyright = score.Copyright ?? "",
         Words = score.Words ?? "",
         Tempo = score.Tempo,
-        TicksPerBeat = score.Song.Resolution,  // 👈 here
-
+        TicksPerBeat = 960, // ✅ AlphaTab 1.6.1 uses fixed 960
         Tracks = score.Tracks.Select((t, ti) => new ExportTrack
         {
             Index = ti,
@@ -96,10 +94,6 @@ app.MapPost("/parse", async (HttpRequest request) =>
                             IsLegatoDestination = be.IsLegatoDestination,
                             IsLetRing = be.IsLetRing,
                             IsPalmMute = be.IsPalmMute,
-                            DeadSlapped = be.DeadSlapped,
-                            Slapped = be.Slap,
-                            Popped = be.Pop,
-                            Tapped = be.Tap,
                             Vibrato = be.Vibrato.ToString(),
                             Notes = be.Notes.Select(n => new ExportNote
                             {
@@ -122,7 +116,8 @@ app.MapPost("/parse", async (HttpRequest request) =>
                                 HarmonicType = n.HarmonicType.ToString(),
                                 HarmonicValue = n.HarmonicValue,
                                 BendType = n.BendType.ToString(),
-                                BendPoints = n.BendPoints?.Select(bp => ((double)bp.Offset, (double)bp.Value)).ToList()
+                                BendPoints = n.BendPoints?.Select(bp =>
+                                    (Offset: (double)bp.Offset, Value: (double)bp.Value)).ToList()
                                     ?? new List<(double, double)>()
                             }).ToList()
                         }).ToList()
@@ -132,7 +127,10 @@ app.MapPost("/parse", async (HttpRequest request) =>
         }).ToList()
     };
 
-    return Results.Json(export, new JsonSerializerOptions { WriteIndented = true });
+    return Results.Json(export, new JsonSerializerOptions
+    {
+        WriteIndented = true
+    });
 });
 
 app.Run();

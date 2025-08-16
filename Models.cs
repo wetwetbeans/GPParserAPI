@@ -11,8 +11,10 @@ namespace GPParser.Models
         public string Words { get; set; } = "";
         public double Tempo { get; set; } = 120.0;
         public int TicksPerBeat { get; set; }
+        public List<ExportMasterBar> MasterBars { get; set; } = new();
         public List<ExportTrack> Tracks { get; set; } = new();
     }
+
 
     public sealed class ExportMasterBar
     {
@@ -56,7 +58,10 @@ namespace GPParser.Models
         public double TranspositionPitch { get; set; }
         public bool IsPercussion { get; set; }
         public List<ExportBar> Bars { get; set; } = new();
+        public double StringHigh { get; set; }
+        public double StringLow { get; set; }
     }
+
 
     public class ExportBar
     {
@@ -111,10 +116,6 @@ namespace GPParser.Models
         // --- Styles ---
         public bool IsLetRing { get; set; }
         public bool IsPalmMute { get; set; }
-        public bool DeadSlapped { get; set; }
-        public bool Slapped { get; set; }
-        public bool Popped { get; set; }
-        public bool Tapped { get; set; }
         public bool FadeIn { get; set; }
 
         // --- Techniques ---
