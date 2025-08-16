@@ -54,6 +54,8 @@ app.MapPost("/parse", async (HttpRequest request) =>
         Copyright = score.Copyright ?? "",
         Words = score.Words ?? "",
         Tempo = score.Tempo,
+        TicksPerBeat = score.Song.Resolution,  // 👈 here
+
         Tracks = score.Tracks.Select((t, ti) => new ExportTrack
         {
             Index = ti,

@@ -10,6 +10,8 @@ namespace GPParser.Models
         public string Title { get; set; } = "";
         public string Words { get; set; } = "";
         public double Tempo { get; set; } = 120.0;
+        public int TicksPerBeat { get; set; }
+
         public List<ExportTrack> Tracks { get; set; } = new();
     }
 
