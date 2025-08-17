@@ -170,8 +170,8 @@ namespace GPParser.Models
         public bool IsStaccato { get; set; }
 
         // Slides
-        public string SlideInType { get; set; } = "None";
-        public string SlideOutType { get; set; } = "None";
+        public int SlideInType { get; set; }
+        public int SlideOutType { get; set; }
         public bool IsSlideOrigin { get; set; }
         public bool IsSlideDestination { get; set; }
 
