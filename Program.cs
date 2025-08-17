@@ -99,6 +99,7 @@ app.MapPost("/parse", async (HttpRequest request) =>
                         {
                             Id = be.Id,
                             Index = be.Index,
+                            BarIndex = bi,
                             DisplayStart = be.DisplayStart,
                             DisplayDuration = be.DisplayDuration,
                             PlaybackStart = be.PlaybackStart,

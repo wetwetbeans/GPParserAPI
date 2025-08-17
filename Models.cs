@@ -96,6 +96,7 @@ namespace GPParser.Models
         // Identity
         public double Id { get; set; } = _globalBeatId++;
         public double Index { get; set; }
+        public double BarIndex { get; set; }
 
         // Timing
         public double DisplayStart { get; set; }
