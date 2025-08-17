@@ -105,7 +105,7 @@ namespace GPParser.Models
         public double PlaybackDuration { get; set; }
 
         // Beat type
-        public string Duration { get; set; } = "Quarter";
+        public int Duration { get; set; }
         public bool IsRest { get; set; }
         public double Dots { get; set; }
         public bool IsEmpty { get; set; }
