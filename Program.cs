@@ -98,6 +98,8 @@ app.MapPost("/parse", async (HttpRequest request) =>
                             Notes = be.Notes.Select(n => new ExportNote
                             {
                                 String = n.String,
+                                StringLow = n.String,
+                                StringHigh = (s.Tuning?.Count ?? 6) - n.String + 1,
                                 Fret = n.Fret,
                                 IsTieOrigin = n.IsTieOrigin,
                                 IsTieDestination = n.IsTieDestination,
@@ -112,14 +114,17 @@ app.MapPost("/parse", async (HttpRequest request) =>
                                 IsStaccato = n.IsStaccato,
                                 SlideInType = n.SlideInType.ToString(),
                                 SlideOutType = n.SlideOutType.ToString(),
+                                IsSlideOrigin = n.SlideTarget != null,
+                                IsSlideDestination = n.SlideOrigin != null,
                                 Vibrato = n.Vibrato.ToString(),
                                 HarmonicType = n.HarmonicType.ToString(),
                                 HarmonicValue = n.HarmonicValue,
                                 BendType = n.BendType.ToString(),
                                 BendPoints = n.BendPoints?.Select(bp =>
                                     (Offset: (double)bp.Offset, Value: (double)bp.Value)).ToList()
-                                    ?? new List<(double, double)>()
+        ?? new List<(double, double)>()
                             }).ToList()
+
                         }).ToList()
                     }).ToList()
                 }).ToList()

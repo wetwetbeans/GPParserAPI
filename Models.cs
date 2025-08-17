@@ -58,8 +58,7 @@ namespace GPParser.Models
         public double TranspositionPitch { get; set; }
         public bool IsPercussion { get; set; }
         public List<ExportBar> Bars { get; set; } = new();
-        public double StringHigh { get; set; }
-        public double StringLow { get; set; }
+
     }
 
 
@@ -139,23 +138,40 @@ namespace GPParser.Models
     {
         public double String { get; set; }
         public double Fret { get; set; }
+
+        // Ties & hammer/pull/slurs
         public bool IsTieOrigin { get; set; }
         public bool IsTieDestination { get; set; }
         public bool IsHammerPullOrigin { get; set; }
         public bool IsHammerPullDestination { get; set; }
         public bool IsSlurOrigin { get; set; }
         public bool IsSlurDestination { get; set; }
+
+        // Styles
         public bool IsGhost { get; set; }
         public bool IsDead { get; set; }
         public bool IsPalmMute { get; set; }
         public bool IsLetRing { get; set; }
         public bool IsStaccato { get; set; }
+
+        // Slides
         public string SlideInType { get; set; } = "None";
         public string SlideOutType { get; set; } = "None";
+        public bool IsSlideOrigin { get; set; }        // ✅ starting note of slide
+        public bool IsSlideDestination { get; set; }   // ✅ ending note of slide
+
+        // Vibrato & harmonics
         public string Vibrato { get; set; } = "None";
         public string HarmonicType { get; set; } = "None";
         public double HarmonicValue { get; set; }
+
+        // Bends
         public string BendType { get; set; } = "None";
         public List<(double Offset, double Value)> BendPoints { get; set; } = new();
+
+        // Extra string info
+        public double StringHigh { get; set; }
+        public double StringLow { get; set; }
     }
+
 }
